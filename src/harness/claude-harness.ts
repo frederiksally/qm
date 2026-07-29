@@ -98,7 +98,16 @@ type BridgedTool = {
   ): Promise<{ content?: Array<{ type?: string; text?: string }>; terminate?: boolean }>;
 };
 
-const CHILD_TOOL_NAMES = new Set(["execute", "read", "write", "publish", "memory", "history", "background"]);
+const CHILD_TOOL_NAMES = new Set([
+  "execute",
+  "read",
+  "write",
+  "publish",
+  "memory",
+  "history",
+  "query_brain",
+  "background",
+]);
 const CLAUDE_CHILD_AGENT_TYPES = new Set(["research", "code", "consult"]);
 const CLAUDE_ENV_PASSTHROUGH = [
   "PATH",

@@ -44,6 +44,7 @@ import type { RunActivityStore } from "../../runs/run-activity-store.ts";
 import type { RunStore } from "../../runs/run-store.ts";
 import type { TaskStore } from "../../tasks/task-store.ts";
 import type { MemoryService } from "../../memory/memory-service.ts";
+import type { BrainQueryService } from "../../memory/brain-query-service.ts";
 import type { MemoryStrategy } from "../../memory/strategy.ts";
 import type { MemoryPolicy } from "../../memory/policy.ts";
 import type { DurableMap } from "../../persistence/durable-map.ts";
@@ -122,6 +123,7 @@ export interface OrchestratorDeps {
   acl: AclStore;
   admin?: AdminService;
   memory: MemoryService;
+  brain?: BrainQueryService;
   memoryPolicy?: MemoryPolicy;
   memoryStrategy?: MemoryStrategy;
   skills?: SkillStore;

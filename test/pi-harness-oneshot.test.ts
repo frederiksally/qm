@@ -121,6 +121,9 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
       scratchExecEnabled: true,
       sharedOwnerAuthIsolation: true,
       reachExecEnabled: true,
+      brainMcpUrl: "https://brain.test",
+      brainRoClientId: "ro",
+      brainRoClientSecret: "shh",
       signingSecret: "sek",
       apiBaseUrl: "https://core.test",
       turnWallClockMs: 111_000,
@@ -140,6 +143,7 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
     scratchExec: true,
     ownerAuthExec: true,
     reachExec: true,
+    brainQuery: true,
     controlTools: true,
     turnWallClockMs: 111_000,
     execTimeoutMs: 22_000,
@@ -147,6 +151,26 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
     backgroundJobTtlMs: 44_000,
     backgroundJobTtlMaxMs: 55_000,
   });
+});
+
+test("piHarnessConfigOptions leaves brainQuery off unless the read-only brain is fully configured", () => {
+  assert.equal(piHarnessConfigOptions(testConfig()).brainQuery, false);
+  assert.equal(piHarnessConfigOptions(testConfig({ brainMcpUrl: "https://brain.test" })).brainQuery, false);
+  assert.equal(
+    piHarnessConfigOptions(testConfig({ brainMcpUrl: "https://brain.test", brainRoClientId: "ro" })).brainQuery,
+    false,
+    "client id alone isn't enough",
+  );
+  assert.equal(
+    piHarnessConfigOptions(testConfig({ brainMcpUrl: "https://brain.test", brainBearerToken: "tok" })).brainQuery,
+    true,
+    "a static bearer token is a complete credential",
+  );
+  assert.equal(
+    piHarnessConfigOptions(testConfig({ brainBearerToken: "tok" })).brainQuery,
+    false,
+    "a bearer token without an MCP URL is not enough",
+  );
 });
 
 test("piHarnessConfigOptions leaves controlTools off unless a self-API (signing secret + api base) is configured", () => {

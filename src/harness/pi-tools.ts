@@ -237,6 +237,7 @@ export interface PiToolsOptions {
   execTimeoutCeilingMs?: number;
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
+  brainQuery?: boolean;
   controlTools?: boolean;
   readOnly?: boolean;
   surfaceTools?: boolean;
@@ -250,6 +251,9 @@ export function coreToolOptions(config: Config): CoreToolOptions {
     scratchExec: config.scratchExecEnabled,
     ownerAuthExec: config.sharedOwnerAuthIsolation,
     reachExec: config.reachExecEnabled,
+    brainQuery: Boolean(
+      config.brainMcpUrl && (config.brainBearerToken || (config.brainRoClientId && config.brainRoClientSecret)),
+    ),
     controlTools: Boolean(config.signingSecret && config.apiBaseUrl),
     execTimeoutMs: config.execTimeoutDefaultMs,
     execTimeoutCeilingMs: config.execTimeoutMaxMs,
@@ -258,7 +262,7 @@ export function coreToolOptions(config: Config): CoreToolOptions {
   };
 }
 
-const READ_ONLY_TOOL_NAMES = new Set(["memory", "history", "finish_silently"]);
+const READ_ONLY_TOOL_NAMES = new Set(["memory", "history", "query_brain", "finish_silently"]);
 
 export function pauseStampAfterToolCall(
   ref: Pick<ToolContextRef, "pausedOnApproval" | "silentRequested">,
@@ -278,6 +282,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
   const scratchExec = !!opts?.scratchExec;
   const ownerAuthExec = !!opts?.ownerAuthExec;
   const reachExec = !!opts?.reachExec;
+  const brainQuery = !!opts?.brainQuery;
   const controlTools = !!opts?.controlTools;
   const surfaceTools = !!opts?.surfaceTools;
   const execTimeoutSec = Math.round((opts?.execTimeoutMs ?? CONFIG_DEFAULTS.execTimeoutDefaultSec * 1000) / 1000);
@@ -1008,6 +1013,42 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
           hits.length
             ? hits.map((h) => `- ${h}`).join("\n")
             : `[nothing in this conversation's transcript matches "${params.query}"]`,
+        ),
+      );
+    },
+  });
+
+  const queryBrain = defineTool({
+    name: "query_brain",
+    label: "query_brain",
+    description:
+      "Query the team's external knowledge brain — a shared, curated corpus of facts, docs, and " +
+      "decisions the team maintains outside this conversation. Use it to look up team knowledge you " +
+      "don't already have (how something works, who owns what, a prior decision, a runbook). It is " +
+      "STRICTLY READ-ONLY: you search the brain, you never write to it — nothing you say or remember " +
+      "here is stored in the team brain. Returns the matching fact lines (most relevant first). " +
+      "Distinct from `memory` (your own remembered facts about this person/place) and `history` (this " +
+      "conversation's transcript).",
+    parameters: Type.Object({
+      query: Type.String({ description: "What to look up in the team brain (a question or keywords)." }),
+      limit: Type.Optional(Type.Integer({ description: "Max facts to return (default 20)." })),
+    }),
+    async execute(callId, params) {
+      const tc = ref.current;
+      if (!tc) return text("[error] no active tool context");
+      await recordCall(callId, {
+        tool: "query_brain",
+        query: params.query,
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      });
+      const hits = await tc.queryBrain(params.query, params.limit);
+      return recordResult(
+        callId,
+        { tool: "query_brain", query: params.query, count: hits.length },
+        text(
+          hits.length
+            ? hits.map((h) => `- ${h}`).join("\n")
+            : `[the team brain has nothing matching "${params.query}"]`,
         ),
       );
     },
@@ -2401,6 +2442,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     publish,
     memory,
     history,
+    ...(brainQuery ? [queryBrain] : []),
     background,
     ...(controlTools ? [cron, share] : []),
     ...(controlTools || surfaceTools ? [guidance] : []),

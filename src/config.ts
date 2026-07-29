@@ -113,6 +113,14 @@ export interface Config {
   memoryConsolidateAfter?: number;
   memoryCaptureQuietMs: number;
   memoryCaptureMaxTurns?: number;
+  brain?: "mcp";
+  brainMcpUrl?: string;
+  brainSharedSource?: string;
+  brainRoClientId?: string;
+  brainRoClientSecret?: string;
+  brainQueryTool?: string;
+  brainAuth?: "oauth-client-credentials" | "bearer";
+  brainBearerToken?: string;
   workers: number;
   leaseTtlMs: number;
   heartbeatIntervalMs: number;
@@ -806,6 +814,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(numEnvStrict("MEMORY_CAPTURE_MAX_TURNS", env.MEMORY_CAPTURE_MAX_TURNS) !== undefined
       ? { memoryCaptureMaxTurns: numEnvStrict("MEMORY_CAPTURE_MAX_TURNS", env.MEMORY_CAPTURE_MAX_TURNS) }
       : {}),
+    ...(env.BRAIN === "mcp" ? { brain: "mcp" as const } : {}),
+    ...(env.BRAIN_MCP_URL ? { brainMcpUrl: env.BRAIN_MCP_URL } : {}),
+    ...(env.BRAIN_SHARED_SOURCE ? { brainSharedSource: env.BRAIN_SHARED_SOURCE } : {}),
+    ...(env.BRAIN_RO_CLIENT_ID ? { brainRoClientId: env.BRAIN_RO_CLIENT_ID } : {}),
+    ...(env.BRAIN_RO_CLIENT_SECRET ? { brainRoClientSecret: env.BRAIN_RO_CLIENT_SECRET } : {}),
+    ...(env.BRAIN_QUERY_TOOL ? { brainQueryTool: env.BRAIN_QUERY_TOOL } : {}),
+    ...(env.BRAIN_AUTH === "oauth-client-credentials" || env.BRAIN_AUTH === "bearer"
+      ? { brainAuth: env.BRAIN_AUTH }
+      : {}),
+    ...(env.BRAIN_BEARER_TOKEN ? { brainBearerToken: env.BRAIN_BEARER_TOKEN } : {}),
     snapshotStore: env.SNAPSHOT_STORE === "s3" ? "s3" : "local",
     transferStore: env.TRANSFER_STORE === "s3" ? "s3" : "local",
     ...(env.S3_BUCKET ? { s3Bucket: env.S3_BUCKET } : {}),

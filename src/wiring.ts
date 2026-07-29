@@ -86,6 +86,9 @@ import type { DeployGitArchive } from "./deploy/deploy-git-store.ts";
 import { createLocalWorkspaceStore, type WorkspaceStore } from "./workspace/workspace-store.ts";
 import { createMemoryService, type MemoryService } from "./memory/memory-service.ts";
 import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts";
+import { createBrainMemoryService } from "./memory/brain-memory-service.ts";
+import { createBrainQueryService, type BrainQueryService } from "./memory/brain-query-service.ts";
+import { createBrainClientStore, type BrainClient } from "./memory/brain-client-store.ts";
 import {
   createLocalBlobTransferStore,
   createS3BlobTransferStore,
@@ -553,6 +556,29 @@ export function buildApp(
   const baseMemory: MemoryService = config.databaseUrl
     ? createPostgresMemoryService(config.databaseUrl)
     : createMemoryService(workspace);
+  const brainClients = createBrainClientStore(artifactMap<BrainClient>("brain_clients"));
+  const brainStore =
+    config.brain === "mcp" && config.brainMcpUrl
+      ? createBrainMemoryService({
+          mcpUrl: config.brainMcpUrl,
+          clients: brainClients,
+          sharedSource: config.brainSharedSource ?? "shared",
+          fallback: baseMemory,
+          audit: auditLog,
+        })
+      : baseMemory;
+  const brainQuery: BrainQueryService | undefined =
+    config.brainMcpUrl && (config.brainBearerToken || (config.brainRoClientId && config.brainRoClientSecret))
+      ? createBrainQueryService({
+          mcpUrl: config.brainMcpUrl,
+          ...(config.brainAuth ? { auth: config.brainAuth } : {}),
+          ...(config.brainRoClientId ? { clientId: config.brainRoClientId } : {}),
+          ...(config.brainRoClientSecret ? { clientSecret: config.brainRoClientSecret } : {}),
+          ...(config.brainBearerToken ? { bearerToken: config.brainBearerToken } : {}),
+          ...(config.brainQueryTool ? { queryTool: config.brainQueryTool } : {}),
+          audit: auditLog,
+        })
+      : undefined;
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();
   const sandboxOnError = (e: { category: string; code: string; message: string; scopeLabel?: string }) =>
     errors.record({
@@ -798,7 +824,7 @@ export function buildApp(
   const admin = createAdminService(adminGrantStore);
   const { strategy: memoryStrategy, memory } = createMemoryStrategy(config.memoryStrategy, {
     harness: harness.models,
-    memory: baseMemory,
+    memory: brainStore,
     workspace,
     ...(config.memoryConsolidateAfter !== undefined ? { consolidateAfter: config.memoryConsolidateAfter } : {}),
     captureQuietMs: config.memoryCaptureQuietMs,
@@ -901,6 +927,7 @@ export function buildApp(
     deploy: deployService,
     acl,
     admin,
+    ...(brainQuery ? { brain: brainQuery } : {}),
     ...(config.maxContextEntries !== undefined ? { maxContextEntries: config.maxContextEntries } : {}),
     ...(config.maxContextTokens !== undefined ? { maxContextTokens: config.maxContextTokens } : {}),
     execTimeoutMs: config.execTimeoutDefaultMs,

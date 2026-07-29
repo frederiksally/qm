@@ -113,7 +113,16 @@ export function codexNonRetryable(message: string): boolean {
 export function codexProviderFailure(message: string): Error {
   return codexNonRetryable(message) ? new NonRetryableTurnError(message) : new Error(message);
 }
-const CODEX_CHILD_TOOL_NAMES = new Set(["execute", "read", "write", "publish", "memory", "history", "background"]);
+const CODEX_CHILD_TOOL_NAMES = new Set([
+  "execute",
+  "read",
+  "write",
+  "publish",
+  "memory",
+  "history",
+  "query_brain",
+  "background",
+]);
 
 export function codexChildToolAllowed(name: string): boolean {
   return CODEX_CHILD_TOOL_NAMES.has(name);

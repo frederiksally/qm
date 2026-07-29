@@ -47,6 +47,9 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
     async history(q) {
       return q.includes("budget") ? ["user#3 (2026-06-01T00:00:00.000Z): the budget doc is in shared/q2.md"] : [];
     },
+    async queryBrain(q) {
+      return q.includes("runbook") ? ["The deploy runbook lives at ops/deploy.md"] : [];
+    },
     async backgroundStart(command) {
       return {
         processId: "bg-1",
@@ -927,6 +930,33 @@ test("the surface tool is NAMED after its surface — a telegram surface produce
   const posted = emitted.find((e) => e.type === "tool_result" && e.payload.action === "post")!.payload;
   assert.equal(posted.tool, "telegram");
   assert.equal(posted.ok, true);
+});
+
+test("query_brain registers only when brainQuery is on, and is read-only (delegates to queryBrain)", async () => {
+  const refOff: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  assert.ok(!createPiTools(refOff).some((t) => t.name === "query_brain"), "off by default");
+
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const tools = createPiTools(ref, { brainQuery: true });
+  const queryBrain = tools.find((t) => t.name === "query_brain");
+  assert.ok(queryBrain, "registers when brainQuery is on");
+
+  await call(queryBrain, { query: "runbook" });
+  const result = emitted.find((e) => e.type === "tool_result" && e.payload.tool === "query_brain")!.payload;
+  assert.equal(result.count, 1);
+  assert.match(result.result, /ops\/deploy\.md/);
+
+  await call(queryBrain, { query: "nothing-matches" });
+  const miss = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "query_brain").at(-1)!.payload;
+  assert.equal(miss.count, 0);
+  assert.match(miss.result, /team brain has nothing matching/);
 });
 
 test("readOnly assembles ONLY observational tools — no execute/background/write/publish/control", () => {
