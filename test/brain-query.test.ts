@@ -60,6 +60,13 @@ function fakeBrain(
       const hits = facts.filter((f) => q.every((t) => f.toLowerCase().includes(t)));
       return resp({ result: { content: [{ type: "text", text: hits.join("\n") }] } });
     }
+    if (name === "wiki_page") {
+      if (args.slug === "missing") return resp({ result: { content: [{ type: "text", text: "" }] } });
+      return resp({ result: { content: [{ type: "text", text: `# ${String(args.slug)}\n\nBody line one.` }] } });
+    }
+    if (name === "wiki_recent") {
+      return resp({ result: { content: [{ type: "text", text: "- atlas moved\n- maria updated" }] } });
+    }
     return resp({
       result: { isError: true, content: [{ type: "text", text: `{"error":"insufficient_scope","op":"${name}"}` }] },
     });
@@ -175,4 +182,103 @@ test("whoami is probed once for the identity log; secrets/tokens never enter the
   const dump = JSON.stringify(events);
   assert.ok(!dump.includes(RO_CLIENT.clientSecret), "client secret must never be audited");
   assert.ok(!dump.includes("ro-tok-"), "access tokens must never be audited");
+});
+
+test("page returns the markdown body for a slug", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    fetchImpl: brain.fetchImpl,
+  });
+  const body = await svc.page("atlas");
+  assert.equal(body, "# atlas\n\nBody line one.");
+  assert.deepEqual(
+    brain.calls.filter((c) => c.kind === "mcp").map((c) => c.tool),
+    ["wiki_page"],
+  );
+});
+
+test("page returns null when the page tool is not configured", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    fetchImpl: brain.fetchImpl,
+  });
+  assert.equal(await svc.page("atlas"), null);
+  assert.equal(brain.calls.length, 0);
+});
+
+test("page returns null for an empty body", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    fetchImpl: brain.fetchImpl,
+  });
+  assert.equal(await svc.page("missing"), null);
+});
+
+test("page returns null and does not throw when the brain is unreachable", async () => {
+  const brain = fakeBrain({ failNetwork: true });
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    fetchImpl: brain.fetchImpl,
+  });
+  assert.equal(await svc.page("atlas"), null);
+});
+
+test("recent passes the days window through and returns the feed", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    recentTool: "wiki_recent",
+    fetchImpl: brain.fetchImpl,
+  });
+  assert.equal(await svc.recent(7), "- atlas moved\n- maria updated");
+  const call = brain.calls.find((c) => c.kind === "mcp");
+  assert.deepEqual(call?.args, { days: 7 });
+});
+
+test("recent omits days when not given", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    recentTool: "wiki_recent",
+    fetchImpl: brain.fetchImpl,
+  });
+  await svc.recent();
+  const call = brain.calls.find((c) => c.kind === "mcp");
+  assert.deepEqual(call?.args, {});
+});
+
+test("bearer auth never calls whoami for page or recent", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    recentTool: "wiki_recent",
+    fetchImpl: brain.fetchImpl,
+  });
+  await svc.page("atlas");
+  await svc.recent();
+  assert.equal(
+    brain.calls.some((c) => c.tool === "whoami"),
+    false,
+  );
 });
