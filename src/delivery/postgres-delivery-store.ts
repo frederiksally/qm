@@ -136,6 +136,14 @@ export function createPostgresDeliveryStore(connectionString: string): DeliveryS
         [idempotencyKey, editRef],
       );
     },
+    async setStreamByKey(idempotencyKey, stream) {
+      await q(
+        `UPDATE deliveries
+            SET destination = destination || jsonb_build_object('editRef', $2::text, 'stream', $3::jsonb)
+          WHERE idempotency_key=$1 AND delivered_at IS NULL`,
+        [idempotencyKey, stream.ts, JSON.stringify(stream)],
+      );
+    },
     async get(id) {
       const rows = await q("SELECT * FROM deliveries WHERE id = $1", [id]);
       return rows[0] ? rowToDelivery(rows[0]) : null;

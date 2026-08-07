@@ -236,6 +236,11 @@ import {
   type AckEmojiPickStore,
 } from "./surface-cache/ack-emoji-pick-store.ts";
 import {
+  createMemoryFeedbackStore,
+  createPostgresFeedbackStore,
+  type FeedbackStore,
+} from "./surface-cache/feedback-store.ts";
+import {
   auxiliaryModelFor,
   auxiliaryModelForProvider,
   defaultModelForHarness,
@@ -361,6 +366,7 @@ export interface BuiltApp {
   monitorPoller?: MonitorPoller;
   ambientJudgments?: AmbientJudgmentStore;
   ackEmojiPicks?: AckEmojiPickStore;
+  feedback?: FeedbackStore;
   channelPolicy: ChannelPolicyStore;
   skillSyncEngine: SkillSyncEngine;
   slackCore: SlackCoreClient;
@@ -1092,6 +1098,11 @@ export function buildApp(
   const ackEmojiPicks: AckEmojiPickStore = config.databaseUrl
     ? createPostgresAckEmojiPickStore(config.databaseUrl)
     : createMemoryAckEmojiPickStore();
+  if (!config.databaseUrl && config.production)
+    throw new Error("DATABASE_URL is required for durable Slack feedback in production");
+  const feedback: FeedbackStore = config.databaseUrl
+    ? createPostgresFeedbackStore(config.databaseUrl)
+    : createMemoryFeedbackStore();
   const providerKeys = providerKeysPresent(config);
   const app = createApp({
     identity,
@@ -1157,8 +1168,10 @@ export function buildApp(
     metrics,
     runs,
     turnStream,
+    runActivity,
     tasks,
     ackPicks: ackEmojiPicks,
+    feedback,
     ackModelId: () => auxiliaryModelForProvider("anthropic"),
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     ...(harness.models.pickAckEmoji ? { pickAckEmoji: (t, c) => harness.models.pickAckEmoji!(t, c) } : {}),
@@ -1417,6 +1430,7 @@ export function buildApp(
       void runSignals.close?.();
       void sessionStateBus.close?.();
       void runActivity.close?.();
+      await feedback.close();
       await harness.turns.close?.();
       await tasks.close?.();
     },
@@ -1483,6 +1497,7 @@ export function buildApp(
     ...(monitorPoller ? { monitorPoller } : {}),
     ...(ambientJudgments ? { ambientJudgments } : {}),
     ...(ackEmojiPicks ? { ackEmojiPicks } : {}),
+    feedback,
     channelPolicy,
     skillSyncEngine,
     slackCore,

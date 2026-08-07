@@ -14,6 +14,7 @@ export interface ReapEvent {
 
 export interface RunDeliveryState {
   editRef?: string;
+  surface?: { kind: "message" | "stream"; channel?: string; ts: string };
 }
 
 export interface Run {

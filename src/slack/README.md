@@ -47,10 +47,10 @@ the tokens, core simply runs without Slack.
 
 ## 3. Use it
 
-- **DM the bot** anything → it replies in the DM (one continuous session per DM). While it's
-  working on your reply you'll see a **⚙ Working…** status message; once the agent starts
-  producing text, the reply streams in place by editing that same message — so the wait is
-  never blank and there's never a duplicate post.
+- **DM the bot** anything → it replies in a titled thread while retaining one continuous session
+  for the whole DM. Slack's native status starts at **Thinking…**, changes to a payload-safe
+  description of the current activity, and stays alive for long turns. Safe text streams into one
+  reply; the finished message is reconciled once with full Slack Markdown and feedback controls.
 - **@mention it in a channel** → it replies in a thread (one session per thread). After
   a real Slack mention in that thread, **just keep talking in the thread — no need to
   re-@mention.** The bot then _listens_
@@ -201,6 +201,16 @@ Each developer, once:
 
 Nothing shared, nothing to coordinate. The repo's `manifest.json` is the template;
 your per-dev name + tokens live only in your local app and your gitignored `.env`.
+
+The Slack plugin must remain in the same process instance as the run executor. Live deltas use the
+in-process `TurnStream`; separating the plugin or routing it to another blue-green instance loses
+the live stream while durable final delivery still works. Turn metrics record per-run published and
+received delta counts plus both instance identities so operators can distinguish routing loss from a
+legitimate no-delta or task-only turn.
+
+Slack does not permit workspace guest roles to access an app with Agents enabled. The plugin still
+rejects restricted, stranger, and other-team identities before activating native status as a
+defense-in-depth boundary; Slack Connect external full members remain governed by audience policy.
 
 ## How it maps to the core
 

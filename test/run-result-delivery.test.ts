@@ -131,6 +131,24 @@ test("runResultDelivery carries the surface's edit checkpoint into the destinati
   assert.equal(d?.destination.editRef, "171.002");
 });
 
+test("runResultDelivery carries an unfinished stream checkpoint into the destination", () => {
+  const surface = { kind: "stream" as const, channel: "D1", ts: "171.003" };
+  const d = runResultDelivery(run({ deliveryState: { surface } }));
+  assert.deepEqual(d?.destination.stream, { channel: "D1", ts: "171.003", unfinished: true });
+});
+
+test("runResultDelivery preserves approval cards for an unfinished stream", () => {
+  const pendingApprovals = [{ requestId: "A1", command: "deploy", reason: "approval required" }];
+  const d = runResultDelivery(
+    run({
+      deliveryState: { surface: { kind: "stream", channel: "D1", ts: "171.003" } },
+      result: { status: "pending_approval", pendingApprovals },
+    }),
+  );
+  assert.deepEqual(d?.destination.pendingApprovals, pendingApprovals);
+  assert.equal(d?.destination.stream?.ts, "171.003");
+});
+
 test("runResultDelivery carries a durable terminal task projection", () => {
   const d = runResultDelivery(run({ deliveryState: { editRef: "171.002" } }), [
     {

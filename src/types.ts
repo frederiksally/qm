@@ -166,6 +166,8 @@ export interface Destination {
   audienceScopeId?: ScopeId;
   onBehalfOf?: string;
   editRef?: string;
+  stream?: { channel: string; ts: string; unfinished: true };
+  pendingApprovals?: PendingApproval[];
   taskList?: Array<{
     id: string;
     title: string;

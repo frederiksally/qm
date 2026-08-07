@@ -377,6 +377,10 @@ export function orgId(): string {
   return process.env.ORG_ID ?? DEFAULT_ORG_ID;
 }
 
+export function runtimeInstanceId(): string {
+  return process.env.FLY_ALLOC_ID?.trim() || process.env.HOSTNAME?.trim() || `pid:${process.pid}`;
+}
+
 export function orgScope(): string {
   return `org:${orgId()}`;
 }

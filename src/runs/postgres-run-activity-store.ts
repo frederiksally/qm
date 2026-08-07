@@ -50,6 +50,43 @@ export function createPostgresRunActivityStore(connectionString: string): RunAct
       }));
     },
 
+    async read(runId, rawCursor, rawLimit = 200) {
+      const cursor = rawCursor === undefined ? undefined : Number(rawCursor);
+      const limit = Math.max(1, Math.min(2_000, Math.floor(rawLimit)));
+      const { rows } = await q(
+        `SELECT id, seq, parent_seq, type, payload, created_at
+           FROM run_activity
+          WHERE run_id=$1 AND ($2::bigint IS NULL OR id>$2)
+          ORDER BY id
+          LIMIT $3`,
+        [runId, cursor ?? null, limit],
+      );
+      let gap = false;
+      if (cursor !== undefined) {
+        const existing = await q(`SELECT 1 FROM run_activity WHERE run_id=$1 AND id<=$2 LIMIT 1`, [runId, cursor]);
+        const any = await q(`SELECT 1 FROM run_activity WHERE run_id=$1 LIMIT 1`, [runId]);
+        gap = existing.rows.length === 0 && any.rows.length > 0;
+      }
+      const selected = gap
+        ? (
+            await q(
+              `SELECT id, seq, parent_seq, type, payload, created_at
+                 FROM run_activity WHERE run_id=$1 ORDER BY id LIMIT $2`,
+              [runId, limit],
+            )
+          ).rows
+        : rows;
+      const entries = selected.map((r): RunActivityEntry => ({
+        seq: Number(r.seq),
+        parentSeq: r.parent_seq == null ? null : Number(r.parent_seq),
+        type: r.type as string,
+        payload: r.payload,
+        createdAt: Number(r.created_at),
+      }));
+      const next = selected.at(-1)?.id ?? cursor;
+      return { entries, ...(next !== undefined ? { cursor: String(next) } : {}), gap };
+    },
+
     async close() {
       await pg.close();
     },

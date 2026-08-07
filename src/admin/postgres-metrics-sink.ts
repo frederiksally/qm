@@ -1,5 +1,6 @@
 import { createPostgresEventSink, type EventColumn } from "./scoped-event-sink.ts";
 import type { MetricsSink, TurnMetricSample } from "./metrics-sink.ts";
+import { sleep } from "../util/async.ts";
 
 const COLUMNS: readonly EventColumn<keyof TurnMetricSample & string>[] = [
   ["ts", "ts", "BIGINT", "number", true],
@@ -32,6 +33,10 @@ const COLUMNS: readonly EventColumn<keyof TurnMetricSample & string>[] = [
   ["queue_ms", "queueMs", "INT", "number"],
   ["deliver_ms", "deliverMs", "INT", "number"],
   ["slack_inflight_ms", "slackInflightMs", "INT", "number"],
+  ["slack_stream_published", "slackStreamPublished", "INT", "number"],
+  ["slack_stream_received", "slackStreamReceived", "INT", "number"],
+  ["slack_stream_published_instance", "slackStreamPublishedInstance", "TEXT", "string"],
+  ["slack_stream_received_instance", "slackStreamReceivedInstance", "TEXT", "string"],
   ["resumed_from_seq", "resumedFromSeq", "INT", "number"],
   ["cache_read", "cacheRead", "BIGINT", "number"],
   ["cache_write", "cacheWrite", "BIGINT", "number"],
@@ -46,6 +51,11 @@ const EXTRA_SCHEMA_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS turn_metrics_by_scope_ts ON turn_metrics(scope_label, ts DESC)",
   "CREATE INDEX IF NOT EXISTS turn_metrics_by_session ON turn_metrics(session_id, ts DESC)",
   "CREATE INDEX IF NOT EXISTS turn_metrics_by_run ON turn_metrics(run_id)",
+  `CREATE TABLE IF NOT EXISTS slack_stream_receipts(
+    run_id TEXT PRIMARY KEY,
+    received INT,
+    instance TEXT
+  )`,
 ];
 
 export function createPostgresMetricsSink(connectionString: string): MetricsSink {
@@ -72,12 +82,56 @@ export function createPostgresMetricsSink(connectionString: string): MetricsSink
         params.push(patch.slackInflightMs);
         sets.push(`slack_inflight_ms = $${params.length}`);
       }
+      if (patch.slackStreamReceived !== undefined) {
+        params.push(patch.slackStreamReceived);
+        sets.push(`slack_stream_received = $${params.length}`);
+      }
+      if (patch.slackStreamReceivedInstance !== undefined) {
+        params.push(patch.slackStreamReceivedInstance);
+        sets.push(`slack_stream_received_instance = $${params.length}`);
+      }
       if (!sets.length) return;
+      if (patch.slackStreamReceived !== undefined || patch.slackStreamReceivedInstance !== undefined) {
+        await sink.q(
+          `INSERT INTO slack_stream_receipts(run_id, received, instance) VALUES($1,$2,$3)
+           ON CONFLICT(run_id) DO UPDATE SET
+             received=COALESCE(EXCLUDED.received, slack_stream_receipts.received),
+             instance=COALESCE(EXCLUDED.instance, slack_stream_receipts.instance)`,
+          [runId, patch.slackStreamReceived ?? null, patch.slackStreamReceivedInstance ?? null],
+        );
+      }
       params.push(runId);
-      await sink
-        .q(`UPDATE turn_metrics SET ${sets.join(", ")} WHERE run_id = $${params.length}`, params)
-        .catch((err) => console.error("[metrics] failed to patch turn metric:", err));
+      for (const delay of [0, 25, 100, 400]) {
+        if (delay) await sleep(delay);
+        try {
+          const rows = await sink.q(
+            `UPDATE turn_metrics SET ${sets.join(", ")} WHERE run_id = $${params.length} RETURNING run_id`,
+            params,
+          );
+          if (rows.length) return;
+        } catch (err) {
+          console.error("[metrics] failed to patch turn metric:", err);
+        }
+      }
     },
-    list: (opts = {}) => sink.list(opts),
+    async list(opts = {}) {
+      const rows = await sink.list(opts);
+      const runIds = rows.flatMap((row) => (row.runId ? [row.runId] : []));
+      if (!runIds.length) return rows;
+      const receipts = await sink.q(
+        `SELECT run_id, received, instance FROM slack_stream_receipts WHERE run_id = ANY($1::text[])`,
+        [runIds],
+      );
+      const byRun = new Map(receipts.map((row) => [String(row.run_id), row]));
+      return rows.map((row) => {
+        const receipt = row.runId ? byRun.get(row.runId) : undefined;
+        if (!receipt) return row;
+        return {
+          ...row,
+          ...(receipt.received == null ? {} : { slackStreamReceived: Number(receipt.received) }),
+          ...(receipt.instance == null ? {} : { slackStreamReceivedInstance: String(receipt.instance) }),
+        };
+      });
+    },
   };
 }

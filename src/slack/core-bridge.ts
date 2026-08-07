@@ -2,6 +2,8 @@ import { swallow } from "../util/errors.ts";
 import { sleep, createInFlightThreadMap, type RunTaskView } from "./lib.ts";
 import type { SlackCoreClient } from "../api/slack-core-client.ts";
 import type { TurnRequest, TurnResult } from "../types.ts";
+import type { SlackActivityStep } from "./activity-steps.ts";
+import type { RunDeliveryState } from "../runs/run-store.ts";
 
 export type CoreTurnBody = Omit<TurnRequest, "surface">;
 
@@ -13,6 +15,8 @@ interface CoreCallHooks {
   onFirstBlock?: (text: string) => void;
   onSurfacePosted?: () => void;
   onTasks?: (tasks: RunTaskView[]) => void;
+  onActivity?: (steps: SlackActivityStep[]) => void;
+  onDelta?: (delta: string) => void;
 }
 
 export interface CoreBridge {
@@ -22,8 +26,17 @@ export interface CoreBridge {
   signalRunAbort(runId: string): Promise<void>;
   fetchActiveRunForThread(threadRef: string): Promise<string | undefined>;
   ackRunDeliveryWithRetry(runId: string): void;
-  reportTurnMetrics(runId: string, patch: { deliverMs?: number; slackInflightMs?: number }): void;
+  reportTurnMetrics(
+    runId: string,
+    patch: {
+      deliverMs?: number;
+      slackInflightMs?: number;
+      slackStreamReceived?: number;
+      slackStreamReceivedInstance?: string;
+    },
+  ): void;
   checkpointRunEditRef(runId: string, editRef: string): Promise<void>;
+  checkpointRunDeliveryState(runId: string, state: RunDeliveryState): Promise<void>;
   reportRunEditRef(runId: string, editRef: string): void;
   stageBlobInCore(bytes: Uint8Array): Promise<{ blobId: string; sizeBytes: number }>;
   fetchBlobFromCore(blobId: string): Promise<Buffer>;
@@ -85,8 +98,22 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
     })().finally(() => inFlightRuns.delete(runId));
   }
 
-  function reportTurnMetrics(runId: string, patch: { deliverMs?: number; slackInflightMs?: number }): void {
-    if (patch.deliverMs === undefined && patch.slackInflightMs === undefined) return;
+  function reportTurnMetrics(
+    runId: string,
+    patch: {
+      deliverMs?: number;
+      slackInflightMs?: number;
+      slackStreamReceived?: number;
+      slackStreamReceivedInstance?: string;
+    },
+  ): void {
+    if (
+      patch.deliverMs === undefined &&
+      patch.slackInflightMs === undefined &&
+      patch.slackStreamReceived === undefined &&
+      patch.slackStreamReceivedInstance === undefined
+    )
+      return;
     void core
       .reportTurnMetrics(runId, patch)
       .catch((err) =>
@@ -96,6 +123,10 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
 
   async function checkpointRunEditRef(runId: string, editRef: string): Promise<void> {
     await core.reportRunEditRef(runId, editRef);
+  }
+
+  async function checkpointRunDeliveryState(runId: string, state: RunDeliveryState): Promise<void> {
+    await core.reportRunDeliveryState(runId, state);
   }
 
   function reportRunEditRef(runId: string, editRef: string): void {
@@ -143,18 +174,12 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
         ...(hooks.onFirstBlock ? { onFirstBlock: hooks.onFirstBlock } : {}),
         ...(hooks.onSurfacePosted ? { onSurfacePosted: hooks.onSurfacePosted } : {}),
         ...(hooks.onTasks ? { onTasks: hooks.onTasks } : {}),
+        ...(hooks.onActivity ? { onActivity: hooks.onActivity } : {}),
+        ...(hooks.onDelta ? { onDelta: hooks.onDelta } : {}),
       });
     } catch (err) {
       inFlightRuns.delete(runId);
       throw coreFailure(err);
-    }
-    if (result?.status === "refused" && result.refusalKind === "security_quarantine") {
-      return result;
-    }
-    if (result && (result.status === "ok" || result.status === "refused" || result.status === "failed")) {
-      ackRunDeliveryWithRetry(runId);
-    } else {
-      inFlightRuns.delete(runId);
     }
     if (result) return result;
     throw new Error("the agent finished without producing a reply");
@@ -169,6 +194,7 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
     ackRunDeliveryWithRetry,
     reportTurnMetrics,
     checkpointRunEditRef,
+    checkpointRunDeliveryState,
     reportRunEditRef,
     stageBlobInCore,
     fetchBlobFromCore,

@@ -122,9 +122,14 @@ export async function exerciseDeliveryStore(store: DeliveryStore): Promise<void>
   await store.setEditRefByKey("run:r-3", "171.003");
   assert.equal((await store.get(late.id))?.destination.editRef, "171.003", "late checkpoint patches the pending copy");
   assert.equal((await store.get(late.id))?.destination.target, "C4", "rest of the destination is untouched");
+  const stream = { channel: "C4", ts: "171.004", unfinished: true as const };
+  await store.setStreamByKey("run:r-3", stream);
+  assert.deepEqual((await store.get(late.id))?.destination.stream, stream, "stream checkpoint patches the pending copy");
   await store.ack(late.id, 500);
   await store.setEditRefByKey("run:r-3", "999.999");
-  assert.equal((await store.get(late.id))?.destination.editRef, "171.003", "delivered copies are not patched");
+  await store.setStreamByKey("run:r-3", { channel: "C4", ts: "999.999", unfinished: true });
+  assert.equal((await store.get(late.id))?.destination.editRef, "171.004", "delivered copies are not patched");
+  assert.deepEqual((await store.get(late.id))?.destination.stream, stream, "delivered stream copies are not patched");
 
   const shadow = await store.enqueue({
     destination: { type: "principal", target: "U-shadow", onBehalfOf: "U-shadow" },

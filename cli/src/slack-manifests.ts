@@ -14,7 +14,15 @@ function toYaml(value: unknown, indent = 0): string {
     const plain = /^[A-Za-z0-9][A-Za-z0-9 _:./-]*$/.test(item) && !item.includes(": ") && !item.endsWith(" ");
     return plain ? item : JSON.stringify(item);
   };
-  if (Array.isArray(value)) return value.map((item) => `${pad}- ${scalar(item)}`).join("\n");
+  if (Array.isArray(value))
+    return value
+      .map((item) => {
+        if (typeof item !== "object" || item === null) return `${pad}- ${scalar(item)}`;
+        const nestedPad = "  ".repeat(indent + 1);
+        const rendered = toYaml(item, indent + 1);
+        return `${pad}- ${rendered.slice(nestedPad.length)}`;
+      })
+      .join("\n");
   if (typeof value === "object" && value !== null) {
     return Object.entries(value)
       .map(([key, item]) =>

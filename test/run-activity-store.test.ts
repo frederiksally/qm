@@ -46,3 +46,25 @@ test("prunes a run's feed once its entries age past the TTL", async () => {
   assert.equal((await s.list("old")).length, 0, "the stale run's feed was pruned");
   assert.equal((await s.list("fresh")).length, 1, "the fresh entry survives");
 });
+
+test("incremental reads preserve arrival order across unrelated seq ranges", async () => {
+  const s = createMemoryRunActivityStore();
+  await s.append("r1", entry(2_000_000, "browser_status"));
+  const first = await s.read("r1");
+  await s.append("r1", entry(2, "tool_call"));
+  const second = await s.read("r1", first.cursor);
+  assert.deepEqual(second.entries.map((e) => e.seq), [2]);
+  assert.equal(second.gap, false);
+});
+
+test("memory activity remains rolling and reports a stale-cursor gap", async () => {
+  const s = createMemoryRunActivityStore();
+  await s.append("r1", entry(0));
+  const first = await s.read("r1");
+  for (let i = 1; i <= 2_100; i++) await s.append("r1", entry(i));
+  const page = await s.read("r1", first.cursor, 2_000);
+  assert.equal(page.gap, true);
+  assert.equal(page.entries.length, 2_000);
+  assert.equal(page.entries[0]!.seq, 101);
+  assert.equal(page.entries.at(-1)!.seq, 2_100);
+});

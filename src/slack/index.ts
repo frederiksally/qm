@@ -14,6 +14,7 @@ import { createApprovals } from "./approvals.ts";
 import { createTurnHandler } from "./turn-handler.ts";
 import { registerSlackEvents } from "./events.ts";
 import { createSurfaceContextFulfiller } from "./surface-context.ts";
+import { createFeedback } from "./feedback.ts";
 import { createDeliveryPoller } from "./deliveries.ts";
 import { createDeferredAckReceiver } from "./deferred-ack.ts";
 import { createHttpEventsReceiver } from "./http-events.ts";
@@ -129,6 +130,7 @@ export async function startSlackPlugin(
     ...(cfg.recentMessages ? { recentMessages: cfg.recentMessages } : {}),
   });
   const approvals = createApprovals({ core, bridge, directory, threads });
+  const feedback = createFeedback(core);
   const ensureHeader = createSurfaceHeaderEnsurer({
     headerFacts: (scope) => core.surfaceHeaderFacts(scope as Parameters<typeof core.surfaceHeaderFacts>[0]),
     webUiPublicUrl: cfg.webUiPublicUrl,
@@ -155,6 +157,7 @@ export async function startSlackPlugin(
     ensureHeader,
   });
   approvals.registerActions(app);
+  feedback.registerActions(app);
   registerSlackEvents(app, {
     handler,
     mirror,
