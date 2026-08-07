@@ -21,10 +21,14 @@ export interface BrainQueryOptions {
   now?: () => number;
 }
 
+export type BrainRead = { ok: true; body: string | null } | { ok: false };
+
+const FAILED: BrainRead = { ok: false };
+
 export interface BrainQueryService {
   query(q: string, limit?: number, principalId?: string): Promise<string[]>;
-  page(slug: string, principalId?: string): Promise<string | null>;
-  recent(days?: number, principalId?: string): Promise<string | null>;
+  page(slug: string, principalId?: string): Promise<BrainRead>;
+  recent(days?: number, principalId?: string): Promise<BrainRead>;
 }
 
 export function createBrainQueryService(opts: BrainQueryOptions): BrainQueryService {
@@ -98,43 +102,43 @@ export function createBrainQueryService(opts: BrainQueryOptions): BrainQueryServ
     },
 
     async page(slug, principalId) {
-      if (!pageTool || !slug.trim()) return null;
+      if (!pageTool || !slug.trim()) return FAILED;
       let token: string;
       try {
         token = await resolveToken();
       } catch (e) {
         audit(pageTool, `token_error: ${errMessage(e)}`, principalId);
-        return null;
+        return FAILED;
       }
       await logIdentityOnce(token, principalId);
       try {
         const body = resultText(await mcp.call(token, pageTool, { slug })).trim();
         audit(pageTool, body ? "ok" : "empty", principalId);
-        return body || null;
+        return { ok: true, body: body || null };
       } catch (e) {
         audit(pageTool, `error: ${errMessage(e)}`, principalId);
-        return null;
+        return FAILED;
       }
     },
 
     async recent(days, principalId) {
-      if (!recentTool) return null;
+      if (!recentTool) return FAILED;
       let token: string;
       try {
         token = await resolveToken();
       } catch (e) {
         audit(recentTool, `token_error: ${errMessage(e)}`, principalId);
-        return null;
+        return FAILED;
       }
       await logIdentityOnce(token, principalId);
       try {
         const args = days === undefined ? {} : { days };
         const body = resultText(await mcp.call(token, recentTool, args)).trim();
         audit(recentTool, body ? "ok" : "empty", principalId);
-        return body || null;
+        return { ok: true, body: body || null };
       } catch (e) {
         audit(recentTool, `error: ${errMessage(e)}`, principalId);
-        return null;
+        return FAILED;
       }
     },
   };

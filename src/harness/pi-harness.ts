@@ -93,6 +93,8 @@ export interface PiHarnessOptions {
   ownerAuthExec?: boolean;
   reachExec?: boolean;
   brainQuery?: boolean;
+  brainPage?: boolean;
+  brainRecent?: boolean;
   controlTools?: boolean;
   turnWallClockMs?: number;
   execTimeoutMs?: number;
@@ -1217,6 +1219,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
   const ownerAuthExec = opts?.ownerAuthExec ?? false;
   const reachExec = opts?.reachExec ?? false;
   const brainQuery = opts?.brainQuery ?? false;
+  const brainPage = opts?.brainPage ?? false;
+  const brainRecent = opts?.brainRecent ?? false;
   const controlTools = opts?.controlTools ?? false;
   const defaultTurnWallClockMs = opts?.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   const signals = opts?.signals;
@@ -1289,6 +1293,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           ownerAuthExec,
           reachExec,
           brainQuery,
+          brainPage,
+          brainRecent,
           controlTools,
           ...(surfaceTools ? { surfaceTools: true } : {}),
           ...(surfaceName ? { surfaceName } : {}),

@@ -194,15 +194,14 @@ test("page returns the markdown body for a slug", async () => {
     pageTool: "wiki_page",
     fetchImpl: brain.fetchImpl,
   });
-  const body = await svc.page("atlas");
-  assert.equal(body, "# atlas\n\nBody line one.");
+  assert.deepEqual(await svc.page("atlas"), { ok: true, body: "# atlas\n\nBody line one." });
   assert.deepEqual(
     brain.calls.filter((c) => c.kind === "mcp").map((c) => c.tool),
     ["wiki_page"],
   );
 });
 
-test("page returns null when the page tool is not configured", async () => {
+test("page reports a failed lookup when the page tool is not configured", async () => {
   const brain = fakeBrain();
   const svc = createBrainQueryService({
     mcpUrl: MCP_URL,
@@ -210,11 +209,11 @@ test("page returns null when the page tool is not configured", async () => {
     bearerToken: "tok",
     fetchImpl: brain.fetchImpl,
   });
-  assert.equal(await svc.page("atlas"), null);
+  assert.deepEqual(await svc.page("atlas"), { ok: false });
   assert.equal(brain.calls.length, 0);
 });
 
-test("page returns null for an empty body", async () => {
+test("page reports a reached-but-empty page distinctly from a failure", async () => {
   const brain = fakeBrain();
   const svc = createBrainQueryService({
     mcpUrl: MCP_URL,
@@ -223,10 +222,10 @@ test("page returns null for an empty body", async () => {
     pageTool: "wiki_page",
     fetchImpl: brain.fetchImpl,
   });
-  assert.equal(await svc.page("missing"), null);
+  assert.deepEqual(await svc.page("missing"), { ok: true, body: null });
 });
 
-test("page returns null and does not throw when the brain is unreachable", async () => {
+test("page reports a failed lookup and does not throw when the brain is unreachable", async () => {
   const brain = fakeBrain({ failNetwork: true });
   const svc = createBrainQueryService({
     mcpUrl: MCP_URL,
@@ -235,7 +234,7 @@ test("page returns null and does not throw when the brain is unreachable", async
     pageTool: "wiki_page",
     fetchImpl: brain.fetchImpl,
   });
-  assert.equal(await svc.page("atlas"), null);
+  assert.deepEqual(await svc.page("atlas"), { ok: false });
 });
 
 test("recent passes the days window through and returns the feed", async () => {
@@ -247,7 +246,7 @@ test("recent passes the days window through and returns the feed", async () => {
     recentTool: "wiki_recent",
     fetchImpl: brain.fetchImpl,
   });
-  assert.equal(await svc.recent(7), "- atlas moved\n- maria updated");
+  assert.deepEqual(await svc.recent(7), { ok: true, body: "- atlas moved\n- maria updated" });
   const call = brain.calls.find((c) => c.kind === "mcp");
   assert.deepEqual(call?.args, { days: 7 });
 });
@@ -324,8 +323,8 @@ test("an empty page and an empty recent feed are audited as empty, not ok", asyn
     fetchImpl: brain.fetchImpl,
     audit,
   });
-  assert.equal(await svc.page("missing", "U1"), null);
-  assert.equal(await svc.recent(0, "U1"), null);
+  assert.deepEqual(await svc.page("missing", "U1"), { ok: true, body: null });
+  assert.deepEqual(await svc.recent(0, "U1"), { ok: true, body: null });
   const events = await audit.events();
   assert.deepEqual(
     events.map((e) => [e.action, e.status]),
@@ -336,7 +335,7 @@ test("an empty page and an empty recent feed are audited as empty, not ok", asyn
   );
 });
 
-test("a tool error on page or recent is audited as error (not swallowed as empty) and fails soft to null", async () => {
+test("a tool error on page or recent is audited as error (not swallowed as empty) and fails soft", async () => {
   const brain = fakeBrain();
   const audit = createAuditLog();
   const svc = createBrainQueryService({
@@ -348,8 +347,8 @@ test("a tool error on page or recent is audited as error (not swallowed as empty
     fetchImpl: brain.fetchImpl,
     audit,
   });
-  assert.equal(await svc.page("atlas", "U1"), null, "page still fails soft → null");
-  assert.equal(await svc.recent(7, "U1"), null, "recent still fails soft → null");
+  assert.deepEqual(await svc.page("atlas", "U1"), { ok: false }, "page still fails soft, and says so");
+  assert.deepEqual(await svc.recent(7, "U1"), { ok: false }, "recent still fails soft, and says so");
   const events = await audit.events();
   for (const action of ["brain.wiki_page_private", "brain.wiki_recent_private"]) {
     const ev = events.find((e) => e.action === action);
@@ -370,8 +369,8 @@ test("a token failure on page or recent is audited as token_error and never reac
     fetchImpl: brain.fetchImpl,
     audit,
   });
-  assert.equal(await svc.page("atlas", "U1"), null);
-  assert.equal(await svc.recent(7, "U1"), null);
+  assert.deepEqual(await svc.page("atlas", "U1"), { ok: false });
+  assert.deepEqual(await svc.recent(7, "U1"), { ok: false });
   assert.equal(brain.calls.length, 0, "an unresolvable token must not issue a brain call");
   const events = await audit.events();
   assert.deepEqual(
@@ -381,4 +380,55 @@ test("a token failure on page or recent is audited as token_error and never reac
   for (const ev of events) {
     assert.ok(ev.status?.startsWith("token_error:"), `status records the token failure, got: ${ev.status}`);
   }
+});
+
+test("an empty page and an empty recent feed are never conflated with a failed lookup", async () => {
+  const reachable = fakeBrain();
+  const reached = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    recentTool: "wiki_recent",
+    fetchImpl: reachable.fetchImpl,
+  });
+  assert.deepEqual(await reached.page("missing"), { ok: true, body: null }, "reached, genuinely no page");
+  assert.deepEqual(await reached.recent(0), { ok: true, body: null }, "reached, genuinely idle window");
+
+  const down = fakeBrain({ failNetwork: true });
+  const unreachable = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    recentTool: "wiki_recent",
+    fetchImpl: down.fetchImpl,
+  });
+  assert.deepEqual(await unreachable.page("missing"), { ok: false }, "an outage is not an absent page");
+  assert.deepEqual(await unreachable.recent(0), { ok: false }, "an outage is not an idle company");
+});
+
+test("a blank slug is a failed lookup, not a claim that the wiki has no such page", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    fetchImpl: brain.fetchImpl,
+  });
+  assert.deepEqual(await svc.page("   "), { ok: false });
+  assert.equal(brain.calls.length, 0);
+});
+
+test("recent reports a failed lookup when the recent tool is not configured", async () => {
+  const brain = fakeBrain();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    fetchImpl: brain.fetchImpl,
+  });
+  assert.deepEqual(await svc.recent(7), { ok: false });
+  assert.equal(brain.calls.length, 0);
 });

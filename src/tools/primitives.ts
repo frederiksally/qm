@@ -43,7 +43,7 @@ import { swallow } from "../util/errors.ts";
 import { fileArtifactId, type FileArtifactStore } from "../files/file-artifact-store.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { MEMORY_FILE, type MemoryService } from "../memory/memory-service.ts";
-import type { BrainQueryService } from "../memory/brain-query-service.ts";
+import type { BrainQueryService, BrainRead } from "../memory/brain-query-service.ts";
 import type { ReachResolution } from "../resolution/scope-reach.ts";
 import type {
   ControlService,
@@ -164,8 +164,8 @@ export interface ToolContext extends SurfaceToolDeps {
   memoryRewrite(content: string): Promise<true | null>;
   history(q: string, limit?: number): Promise<string[]>;
   queryBrain(q: string, limit?: number): Promise<string[]>;
-  brainPage(slug: string): Promise<string | null>;
-  brainRecent(days?: number): Promise<string | null>;
+  brainPage(slug: string): Promise<BrainRead>;
+  brainRecent(days?: number): Promise<BrainRead>;
   backgroundStart(command: string, opts?: { ttlSeconds?: number }): Promise<BackgroundStartResult>;
   backgroundPoll(
     processId: string,
@@ -797,13 +797,13 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       return deps.brain.query(q, limit, deps.createdBy);
     },
 
-    async brainPage(slug: string): Promise<string | null> {
-      if (!deps.brain) return null;
+    async brainPage(slug: string): Promise<BrainRead> {
+      if (!deps.brain) return { ok: false };
       return deps.brain.page(slug, deps.createdBy);
     },
 
-    async brainRecent(days?: number): Promise<string | null> {
-      if (!deps.brain) return null;
+    async brainRecent(days?: number): Promise<BrainRead> {
+      if (!deps.brain) return { ok: false };
       return deps.brain.recent(days, deps.createdBy);
     },
 

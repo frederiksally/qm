@@ -1,11 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  createPiTools,
-  pauseStampAfterToolCall,
-  READ_ONLY_TOOL_NAMES,
-  type ToolContextRef,
-} from "../src/harness/pi-tools.ts";
+import { createPiTools, pauseStampAfterToolCall, type ToolContextRef } from "../src/harness/pi-tools.ts";
 import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
 import { CommandDenied, NeedsApproval, type ToolContext } from "../src/tools/primitives.ts";
 import type { EntryType, SessionEntry } from "../src/types.ts";
@@ -56,10 +51,12 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
       return q.includes("runbook") ? ["The deploy runbook lives at ops/deploy.md"] : [];
     },
     async brainPage(slug) {
-      return slug === "atlas" ? "# Atlas\n- (2026-06-01) shipped the ingest rewrite\n" : null;
+      if (slug === "unreachable") return { ok: false };
+      return { ok: true, body: slug === "atlas" ? "# Atlas\n- (2026-06-01) shipped the ingest rewrite\n" : null };
     },
     async brainRecent(days) {
-      return days === 0 ? null : "- atlas (2026-06-01): shipped the ingest rewrite\n";
+      if (days === 99) return { ok: false };
+      return { ok: true, body: days === 0 ? null : "- atlas (2026-06-01): shipped the ingest rewrite\n" };
     },
     async backgroundStart(command) {
       return {
@@ -967,7 +964,7 @@ test("query_brain registers only when brainQuery is on, and is read-only (delega
   await call(queryBrain, { query: "nothing-matches" });
   const miss = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "query_brain").at(-1)!.payload;
   assert.equal(miss.count, 0);
-  assert.match(miss.result, /team brain has nothing matching/);
+  assert.match(miss.result, /company wiki has nothing matching/);
 });
 
 test("readOnly assembles ONLY observational tools — no execute/background/write/publish/control", () => {
@@ -1750,13 +1747,25 @@ test("brain page and recent tools are absent when their options are off", () => 
   assert.equal(names.includes("brain_recent"), false);
 });
 
-test("brain read tools are all classified read-only", () => {
-  for (const name of ["query_brain", "brain_page", "brain_recent"]) {
-    assert.ok(READ_ONLY_TOOL_NAMES.has(name), `${name} must be read-only`);
-  }
+test("the read-only filter keeps every brain read tool and still drops the acting tools", () => {
+  const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  const readOnly = createPiTools(ref, {
+    brainQuery: true,
+    brainPage: true,
+    brainRecent: true,
+    controlTools: true,
+    scratchExec: true,
+    reachExec: true,
+    readOnly: true,
+  });
+  assert.deepEqual(
+    readOnly.map((t) => t.name).sort(),
+    ["brain_page", "brain_recent", "finish_silently", "history", "memory", "query_brain"],
+    "the read-only filter passes the brain reads through and nothing that acts",
+  );
 });
 
-test("brain_page and brain_recent read through the tool context and report misses as misses", async () => {
+const brainToolFixture = () => {
   const emitted: Emitted[] = [];
   const ref: ToolContextRef = {
     current: fakeToolContext(),
@@ -1766,28 +1775,64 @@ test("brain_page and brain_recent read through the tool context and report misse
     scopeLabel: "personal:U1",
   };
   const tools = createPiTools(ref, { brainQuery: true, brainPage: true, brainRecent: true });
+  const last = (tool: string, type: EntryType = "tool_result") =>
+    emitted.filter((e) => e.type === type && e.payload.tool === tool).at(-1)!.payload;
+  return { tools, last };
+};
+
+test("brain_page separates a page, a genuinely absent page, and an unreachable wiki", async () => {
+  const { tools, last } = brainToolFixture();
   const page = tools.find((t) => t.name === "brain_page");
-  const recent = tools.find((t) => t.name === "brain_recent");
 
   await call(page, { slug: "atlas" });
-  const hit = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_page").at(-1)!.payload;
+  const hit = last("brain_page");
+  assert.equal(hit.reached, true);
   assert.equal(hit.found, true);
   assert.match(hit.result, /shipped the ingest rewrite/);
 
   await call(page, { slug: "nope" });
-  const miss = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_page").at(-1)!.payload;
+  const miss = last("brain_page");
+  assert.equal(miss.reached, true, "the wiki answered — it just has no such page");
   assert.equal(miss.found, false);
-  assert.match(miss.result, /no page with slug "nope"/);
+  assert.match(miss.result, /the company wiki has no page with slug "nope"/);
+
+  await call(page, { slug: "unreachable" });
+  const failed = last("brain_page");
+  assert.equal(failed.reached, false);
+  assert.equal(failed.found, false);
+  assert.match(failed.result, /could not reach the company wiki/);
+  assert.doesNotMatch(
+    failed.result,
+    /has no page/,
+    "a failed lookup must never be reported as the wiki having no such page",
+  );
+});
+
+test("brain_recent separates a feed, a genuinely empty window, and an unreachable wiki", async () => {
+  const { tools, last } = brainToolFixture();
+  const recent = tools.find((t) => t.name === "brain_recent");
 
   await call(recent, {});
-  const feed = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_recent").at(-1)!.payload;
+  const feed = last("brain_recent");
+  assert.equal(feed.reached, true);
   assert.equal(feed.found, true);
   assert.match(feed.result, /shipped the ingest rewrite/);
 
   await call(recent, { days: 0 });
-  const empty = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_recent").at(-1)!.payload;
+  const empty = last("brain_recent");
+  assert.equal(empty.reached, true, "the wiki answered — the window really is empty");
   assert.equal(empty.found, false);
-  assert.match(empty.result, /no recent activity recorded/);
-  const windowed = emitted.filter((e) => e.type === "tool_call" && e.payload.tool === "brain_recent").at(-1)!.payload;
-  assert.equal(windowed.days, 0);
+  assert.match(empty.result, /the company wiki has no recent activity recorded/);
+  assert.equal(last("brain_recent", "tool_call").days, 0, "a zero-day window still reaches the audit trail");
+
+  await call(recent, { days: 99 });
+  const failed = last("brain_recent");
+  assert.equal(failed.reached, false);
+  assert.equal(failed.found, false);
+  assert.match(failed.result, /could not reach the company wiki/);
+  assert.doesNotMatch(
+    failed.result,
+    /no recent activity recorded/,
+    "an outage must never be reported to the agent as an idle company",
+  );
 });

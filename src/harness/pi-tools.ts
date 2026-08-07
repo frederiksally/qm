@@ -274,7 +274,7 @@ export function coreToolOptions(config: Config): CoreToolOptions {
   };
 }
 
-export const READ_ONLY_TOOL_NAMES = new Set([
+const READ_ONLY_TOOL_NAMES = new Set([
   "memory",
   "history",
   "query_brain",
@@ -1051,11 +1051,12 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       "working on, what a project is and where it stands, what was decided about something and when, " +
       "or what has been happening lately. Prefer it over guessing or asking the person to re-explain " +
       "internal context. Returns ranked one-line entity summaries with their page slugs — follow up " +
-      "with `brain_page` to read the page a summary points at. STRICTLY READ-ONLY: nothing you say or " +
-      "remember here is ever written back. Distinct from `memory` (your own remembered facts about " +
-      "this person or place) and `history` (this conversation's transcript).",
+      "with `brain_page` to read the page a summary points at, and reach for `brain_recent` rather than " +
+      "this tool when the job is what changed lately. STRICTLY READ-ONLY: nothing you say or remember " +
+      "here is ever written back. Distinct from `memory` (your own remembered facts about this person " +
+      "or place) and `history` (this conversation's transcript).",
     parameters: Type.Object({
-      query: Type.String({ description: "What to look up in the team brain (a question or keywords)." }),
+      query: Type.String({ description: "What to look up in the company wiki (a question or keywords)." }),
       limit: Type.Optional(Type.Integer({ description: "Max facts to return (default 20)." })),
     }),
     async execute(callId, params) {
@@ -1073,7 +1074,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         text(
           hits.length
             ? hits.map((h) => `- ${h}`).join("\n")
-            : `[the team brain has nothing matching "${params.query}"]`,
+            : `[the company wiki has nothing matching "${params.query}"]`,
         ),
       );
     },
@@ -1087,7 +1088,9 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       "the entity's current state, decisions, open questions, and a dated timeline, every claim " +
       "linked to the source it came from. Use this when a search summary is not enough and you need " +
       "the detail — the whole history of a project, everything known about a person's work, the " +
-      "reasoning behind a decision. STRICTLY READ-ONLY.",
+      "reasoning behind a decision. A page the wiki does not have and a wiki you could not reach are " +
+      "reported differently: never turn a failed lookup into a claim that the entity has no page. " +
+      "STRICTLY READ-ONLY.",
     parameters: Type.Object({
       slug: Type.String({ description: 'Entity slug from query_brain results, for example "atlas".' }),
     }),
@@ -1095,11 +1098,17 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       const tc = ref.current;
       if (!tc) return text("[error] no active tool context");
       await recordCall(callId, { tool: "brain_page", slug: params.slug });
-      const body = await tc.brainPage(params.slug);
+      const read = await tc.brainPage(params.slug);
+      const body = read.ok ? read.body : null;
       return recordResult(
         callId,
-        { tool: "brain_page", slug: params.slug, found: body !== null },
-        text(body ?? `[the company wiki has no page with slug "${params.slug}"]`),
+        { tool: "brain_page", slug: params.slug, reached: read.ok, found: body !== null },
+        text(
+          body ??
+            (read.ok
+              ? `[the company wiki has no page with slug "${params.slug}"]`
+              : `[could not reach the company wiki, so whether a page with slug "${params.slug}" exists is unknown]`),
+        ),
       );
     },
   });
@@ -1110,8 +1119,10 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     description:
       "Read what has been moving in the company recently: which wiki pages changed and what was " +
       "added, newest first. Use it for orientation when a turn asks what is going on, what changed " +
-      "this week, or what you might have missed. An empty result genuinely means nothing was " +
-      "recorded in the window — say so rather than filling the gap. STRICTLY READ-ONLY.",
+      "this week, or what you might have missed. When it reports the window as empty, nothing was " +
+      "genuinely recorded in it — say so rather than filling the gap. When it reports that the wiki " +
+      "could not be reached, that is a failed lookup and says nothing about whether the company was " +
+      "idle — report the failure, never the silence. STRICTLY READ-ONLY.",
     parameters: Type.Object({
       days: Type.Optional(Type.Integer({ description: "Window in days. Omit for the standard maintained feed." })),
     }),
@@ -1122,11 +1133,17 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         tool: "brain_recent",
         ...(params.days !== undefined ? { days: params.days } : {}),
       });
-      const body = await tc.brainRecent(params.days);
+      const read = await tc.brainRecent(params.days);
+      const body = read.ok ? read.body : null;
       return recordResult(
         callId,
-        { tool: "brain_recent", found: body !== null },
-        text(body ?? "[the company wiki has no recent activity recorded]"),
+        { tool: "brain_recent", reached: read.ok, found: body !== null },
+        text(
+          body ??
+            (read.ok
+              ? "[the company wiki has no recent activity recorded]"
+              : "[could not reach the company wiki, so what has been happening recently is unknown]"),
+        ),
       );
     },
   });
