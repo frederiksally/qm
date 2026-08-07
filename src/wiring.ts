@@ -87,6 +87,11 @@ import { createLocalWorkspaceStore, type WorkspaceStore } from "./workspace/work
 import { createMemoryService, type MemoryService } from "./memory/memory-service.ts";
 import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts";
 import {
+  createBrainQueryService,
+  hasBrainQueryCredentials,
+  type BrainQueryService,
+} from "./memory/brain-query-service.ts";
+import {
   createLocalBlobTransferStore,
   createS3BlobTransferStore,
   type BlobTransferStore,
@@ -565,6 +570,26 @@ export function buildApp(
   const baseMemory: MemoryService = config.databaseUrl
     ? createPostgresMemoryService(config.databaseUrl)
     : createMemoryService(workspace);
+  const brainQuery: BrainQueryService | undefined =
+    config.brainMcpUrl &&
+    hasBrainQueryCredentials({
+      ...(config.brainAuth ? { auth: config.brainAuth } : {}),
+      ...(config.brainBearerToken ? { bearerToken: config.brainBearerToken } : {}),
+      ...(config.brainRoClientId ? { clientId: config.brainRoClientId } : {}),
+      ...(config.brainRoClientSecret ? { clientSecret: config.brainRoClientSecret } : {}),
+    })
+      ? createBrainQueryService({
+          mcpUrl: config.brainMcpUrl,
+          ...(config.brainAuth ? { auth: config.brainAuth } : {}),
+          ...(config.brainRoClientId ? { clientId: config.brainRoClientId } : {}),
+          ...(config.brainRoClientSecret ? { clientSecret: config.brainRoClientSecret } : {}),
+          ...(config.brainBearerToken ? { bearerToken: config.brainBearerToken } : {}),
+          ...(config.brainQueryTool ? { queryTool: config.brainQueryTool } : {}),
+          ...(config.brainPageTool ? { pageTool: config.brainPageTool } : {}),
+          ...(config.brainRecentTool ? { recentTool: config.brainRecentTool } : {}),
+          audit: auditLog,
+        })
+      : undefined;
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();
   const sandboxOnError = (e: { category: string; code: string; message: string; scopeLabel?: string }) =>
     errors.record({
@@ -965,6 +990,7 @@ export function buildApp(
     deploy: deployService,
     acl,
     admin,
+    ...(brainQuery ? { brain: brainQuery } : {}),
     ...(config.maxContextEntries !== undefined ? { maxContextEntries: config.maxContextEntries } : {}),
     ...(config.maxContextTokens !== undefined ? { maxContextTokens: config.maxContextTokens } : {}),
     execTimeoutMs: config.execTimeoutDefaultMs,

@@ -12,6 +12,7 @@ import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
 import { unscreenedNotice, UNSCREENED_PREFIX, type SecurityScreenVerdict } from "../security/security-posture.ts";
 import { CAPABILITY_TTL_MS } from "../auth/capability-token.ts";
+import { hasBrainQueryCredentials } from "../memory/brain-query-service.ts";
 
 function describePublishAudience(a: PublishAudienceDescriptor | undefined): string {
   if (!a) return "Owned by you.";
@@ -237,6 +238,9 @@ export interface PiToolsOptions {
   execTimeoutCeilingMs?: number;
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
+  brainQuery?: boolean;
+  brainPage?: boolean;
+  brainRecent?: boolean;
   controlTools?: boolean;
   readOnly?: boolean;
   surfaceTools?: boolean;
@@ -246,10 +250,19 @@ export interface PiToolsOptions {
 export type CoreToolOptions = Omit<PiToolsOptions, "readOnly" | "surfaceTools" | "surfaceName">;
 
 export function coreToolOptions(config: Config): CoreToolOptions {
+  const brainCredentials = hasBrainQueryCredentials({
+    ...(config.brainAuth ? { auth: config.brainAuth } : {}),
+    ...(config.brainBearerToken ? { bearerToken: config.brainBearerToken } : {}),
+    ...(config.brainRoClientId ? { clientId: config.brainRoClientId } : {}),
+    ...(config.brainRoClientSecret ? { clientSecret: config.brainRoClientSecret } : {}),
+  });
   return {
     scratchExec: config.scratchExecEnabled,
     ownerAuthExec: config.sharedOwnerAuthIsolation,
     reachExec: config.reachExecEnabled,
+    brainQuery: Boolean(config.brainMcpUrl && brainCredentials),
+    brainPage: Boolean(config.brainMcpUrl && config.brainPageTool && brainCredentials),
+    brainRecent: Boolean(config.brainMcpUrl && config.brainRecentTool && brainCredentials),
     controlTools: Boolean(config.signingSecret && config.apiBaseUrl),
     execTimeoutMs: config.execTimeoutDefaultMs,
     execTimeoutCeilingMs: config.execTimeoutMaxMs,
@@ -258,7 +271,14 @@ export function coreToolOptions(config: Config): CoreToolOptions {
   };
 }
 
-const READ_ONLY_TOOL_NAMES = new Set(["memory", "history", "finish_silently"]);
+const READ_ONLY_TOOL_NAMES = new Set([
+  "memory",
+  "history",
+  "query_brain",
+  "brain_page",
+  "brain_recent",
+  "finish_silently",
+]);
 
 export function pauseStampAfterToolCall(
   ref: Pick<ToolContextRef, "pausedOnApproval" | "silentRequested">,
@@ -278,6 +298,9 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
   const scratchExec = !!opts?.scratchExec;
   const ownerAuthExec = !!opts?.ownerAuthExec;
   const reachExec = !!opts?.reachExec;
+  const brainQuery = !!opts?.brainQuery;
+  const brainPage = !!opts?.brainPage;
+  const brainRecent = !!opts?.brainRecent;
   const controlTools = !!opts?.controlTools;
   const surfaceTools = !!opts?.surfaceTools;
   const execTimeoutSec = Math.round((opts?.execTimeoutMs ?? CONFIG_DEFAULTS.execTimeoutDefaultSec * 1000) / 1000);
@@ -1008,6 +1031,117 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
           hits.length
             ? hits.map((h) => `- ${h}`).join("\n")
             : `[nothing in this conversation's transcript matches "${params.query}"]`,
+        ),
+      );
+    },
+  });
+
+  const queryBrain = defineTool({
+    name: "query_brain",
+    label: "query_brain",
+    description:
+      "Search the company wiki — an automatically maintained, always-current picture of what this " +
+      "organization is doing, built from what people actually said in Slack and meetings and from " +
+      "the work they track. It holds a page per person, project, topic, company, event, and concept, " +
+      "each carrying dated claims with links back to the source. Reach for it whenever a turn touches " +
+      "company reality you do not already have in front of you: who someone is or what they are " +
+      "working on, what a project is and where it stands, what was decided about something and when, " +
+      "or what has been happening lately. Prefer it over guessing or asking the person to re-explain " +
+      "internal context. Returns ranked one-line entity summaries with their page slugs — follow up " +
+      "with `brain_page` to read the page a summary points at, and reach for `brain_recent` rather than " +
+      "this tool when the job is what changed lately. A search that matched nothing and a wiki you " +
+      "could not reach are reported differently: never turn a failed lookup into a claim that the " +
+      "organization knows nothing about it. STRICTLY READ-ONLY: nothing you say or remember here is " +
+      "ever written back. Distinct from `memory` (your own remembered facts about this person or " +
+      "place) and `history` (this conversation's transcript).",
+    parameters: Type.Object({
+      query: Type.String({ description: "What to look up in the company wiki (a question or keywords)." }),
+      limit: Type.Optional(Type.Integer({ description: "Max facts to return (default 20)." })),
+    }),
+    async execute(callId, params) {
+      const tc = ref.current;
+      if (!tc) return text("[error] no active tool context");
+      await recordCall(callId, {
+        tool: "query_brain",
+        query: params.query,
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      });
+      const search = await tc.queryBrain(params.query, params.limit);
+      const hits = search.ok ? search.lines : [];
+      const miss = search.ok
+        ? `[the company wiki has nothing matching "${params.query}"]`
+        : `[could not reach the company wiki, so whether anything matches "${params.query}" is unknown]`;
+      return recordResult(
+        callId,
+        { tool: "query_brain", query: params.query, reached: search.ok, count: hits.length },
+        text(hits.length ? hits.map((h) => `- ${h}`).join("\n") : miss),
+      );
+    },
+  });
+
+  const brainPageDef = defineTool({
+    name: "brain_page",
+    label: "brain_page",
+    description:
+      "Read one full company wiki page by its slug, as returned by `query_brain`. The page carries " +
+      "the entity's current state, decisions, open questions, and a dated timeline, every claim " +
+      "linked to the source it came from. Use this when a search summary is not enough and you need " +
+      "the detail — the whole history of a project, everything known about a person's work, the " +
+      "reasoning behind a decision. A page the wiki does not have and a wiki you could not reach are " +
+      "reported differently: never turn a failed lookup into a claim that the entity has no page. " +
+      "STRICTLY READ-ONLY.",
+    parameters: Type.Object({
+      slug: Type.String({ description: 'Entity slug from query_brain results, for example "atlas".' }),
+    }),
+    async execute(callId, params) {
+      const tc = ref.current;
+      if (!tc) return text("[error] no active tool context");
+      await recordCall(callId, { tool: "brain_page", slug: params.slug });
+      const read = await tc.brainPage(params.slug);
+      const body = read.ok ? read.body : null;
+      return recordResult(
+        callId,
+        { tool: "brain_page", slug: params.slug, reached: read.ok, found: body !== null },
+        text(
+          body ??
+            (read.ok
+              ? `[the company wiki has no page with slug "${params.slug}"]`
+              : `[could not reach the company wiki, so whether a page with slug "${params.slug}" exists is unknown]`),
+        ),
+      );
+    },
+  });
+
+  const brainRecentDef = defineTool({
+    name: "brain_recent",
+    label: "brain_recent",
+    description:
+      "Read what has been moving in the company recently: which wiki pages changed and what was " +
+      "added, newest first. Use it for orientation when a turn asks what is going on, what changed " +
+      "this week, or what you might have missed. When it reports the window as empty, nothing was " +
+      "genuinely recorded in it — say so rather than filling the gap. When it reports that the wiki " +
+      "could not be reached, that is a failed lookup and says nothing about whether the company was " +
+      "idle — report the failure, never the silence. STRICTLY READ-ONLY.",
+    parameters: Type.Object({
+      days: Type.Optional(Type.Integer({ description: "Window in days. Omit for the standard maintained feed." })),
+    }),
+    async execute(callId, params) {
+      const tc = ref.current;
+      if (!tc) return text("[error] no active tool context");
+      await recordCall(callId, {
+        tool: "brain_recent",
+        ...(params.days !== undefined ? { days: params.days } : {}),
+      });
+      const read = await tc.brainRecent(params.days);
+      const body = read.ok ? read.body : null;
+      return recordResult(
+        callId,
+        { tool: "brain_recent", reached: read.ok, found: body !== null },
+        text(
+          body ??
+            (read.ok
+              ? "[the company wiki has no recent activity recorded]"
+              : "[could not reach the company wiki, so what has been happening recently is unknown]"),
         ),
       );
     },
@@ -2401,6 +2535,9 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     publish,
     memory,
     history,
+    ...(brainQuery ? [queryBrain] : []),
+    ...(brainPage ? [brainPageDef] : []),
+    ...(brainRecent ? [brainRecentDef] : []),
     background,
     ...(controlTools ? [cron, share] : []),
     ...(controlTools || surfaceTools ? [guidance] : []),

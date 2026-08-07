@@ -1710,6 +1710,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
+          ...(deps.brain ? { brain: deps.brain } : {}),
           sessionHistory: {
             search: async (q: string, limit?: number) =>
               searchSessionEntries(

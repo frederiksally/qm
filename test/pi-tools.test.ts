@@ -47,6 +47,18 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
     async history(q) {
       return q.includes("budget") ? ["user#3 (2026-06-01T00:00:00.000Z): the budget doc is in shared/q2.md"] : [];
     },
+    async queryBrain(q) {
+      if (q.includes("unreachable")) return { ok: false };
+      return { ok: true, lines: q.includes("runbook") ? ["The deploy runbook lives at ops/deploy.md"] : [] };
+    },
+    async brainPage(slug) {
+      if (slug === "unreachable") return { ok: false };
+      return { ok: true, body: slug === "atlas" ? "# Atlas\n- (2026-06-01) shipped the ingest rewrite\n" : null };
+    },
+    async brainRecent(days) {
+      if (days === 99) return { ok: false };
+      return { ok: true, body: days === 0 ? null : "- atlas (2026-06-01): shipped the ingest rewrite\n" };
+    },
     async backgroundStart(command) {
       return {
         processId: "bg-1",
@@ -929,6 +941,61 @@ test("the surface tool is NAMED after its surface — a telegram surface produce
   assert.equal(posted.ok, true);
 });
 
+test("query_brain registers only when brainQuery is on, and is read-only (delegates to queryBrain)", async () => {
+  const refOff: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  assert.ok(!createPiTools(refOff).some((t) => t.name === "query_brain"), "off by default");
+
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const tools = createPiTools(ref, { brainQuery: true });
+  const queryBrain = tools.find((t) => t.name === "query_brain");
+  assert.ok(queryBrain, "registers when brainQuery is on");
+
+  await call(queryBrain, { query: "runbook" });
+  const result = emitted.find((e) => e.type === "tool_result" && e.payload.tool === "query_brain")!.payload;
+  assert.equal(result.count, 1);
+  assert.match(result.result, /ops\/deploy\.md/);
+
+  await call(queryBrain, { query: "nothing-matches" });
+  const miss = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "query_brain").at(-1)!.payload;
+  assert.equal(miss.count, 0);
+  assert.match(miss.result, /company wiki has nothing matching/);
+});
+
+test("query_brain separates ranked hits, a genuine no-match, and an unreachable wiki", async () => {
+  const { tools, last } = brainToolFixture();
+  const queryBrain = tools.find((t) => t.name === "query_brain");
+
+  await call(queryBrain, { query: "runbook" });
+  const hit = last("query_brain");
+  assert.equal(hit.reached, true);
+  assert.equal(hit.count, 1);
+  assert.match(hit.result, /ops\/deploy\.md/);
+
+  await call(queryBrain, { query: "nothing-matches" });
+  const miss = last("query_brain");
+  assert.equal(miss.reached, true, "the wiki answered — nothing matched");
+  assert.equal(miss.count, 0);
+  assert.match(miss.result, /the company wiki has nothing matching "nothing-matches"/);
+
+  await call(queryBrain, { query: "unreachable" });
+  const failed = last("query_brain");
+  assert.equal(failed.reached, false);
+  assert.equal(failed.count, 0);
+  assert.match(failed.result, /could not reach the company wiki/);
+  assert.doesNotMatch(
+    failed.result,
+    /nothing matching/,
+    "a failed search must never be reported as the wiki having no match",
+  );
+});
+
 test("readOnly assembles ONLY observational tools — no execute/background/write/publish/control", () => {
   const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
   const full = createPiTools(ref, { controlTools: true, scratchExec: true, reachExec: true });
@@ -1691,4 +1758,110 @@ test("pauseStampAfterToolCall stamps terminate on sibling results once the turn 
 
   const withPrior = pauseStampAfterToolCall(ref, () => ({ terminate: false }));
   assert.deepEqual(await withPrior({}, undefined), { terminate: true });
+});
+
+test("brain page and recent tools are registered when their options are on", () => {
+  const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  const names = createPiTools(ref, { brainQuery: true, brainPage: true, brainRecent: true }).map((t) => t.name);
+  assert.ok(names.includes("query_brain"));
+  assert.ok(names.includes("brain_page"));
+  assert.ok(names.includes("brain_recent"));
+});
+
+test("brain page and recent tools are absent when their options are off", () => {
+  const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  const names = createPiTools(ref, { brainQuery: true }).map((t) => t.name);
+  assert.ok(names.includes("query_brain"));
+  assert.equal(names.includes("brain_page"), false);
+  assert.equal(names.includes("brain_recent"), false);
+});
+
+test("the read-only filter keeps every brain read tool and still drops the acting tools", () => {
+  const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  const readOnly = createPiTools(ref, {
+    brainQuery: true,
+    brainPage: true,
+    brainRecent: true,
+    controlTools: true,
+    scratchExec: true,
+    reachExec: true,
+    readOnly: true,
+  });
+  assert.deepEqual(
+    readOnly.map((t) => t.name).sort(),
+    ["brain_page", "brain_recent", "finish_silently", "history", "memory", "query_brain"],
+    "the read-only filter passes the brain reads through and nothing that acts",
+  );
+});
+
+const brainToolFixture = () => {
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const tools = createPiTools(ref, { brainQuery: true, brainPage: true, brainRecent: true });
+  const last = (tool: string, type: EntryType = "tool_result") =>
+    emitted.filter((e) => e.type === type && e.payload.tool === tool).at(-1)!.payload;
+  return { tools, last };
+};
+
+test("brain_page separates a page, a genuinely absent page, and an unreachable wiki", async () => {
+  const { tools, last } = brainToolFixture();
+  const page = tools.find((t) => t.name === "brain_page");
+
+  await call(page, { slug: "atlas" });
+  const hit = last("brain_page");
+  assert.equal(hit.reached, true);
+  assert.equal(hit.found, true);
+  assert.match(hit.result, /shipped the ingest rewrite/);
+
+  await call(page, { slug: "nope" });
+  const miss = last("brain_page");
+  assert.equal(miss.reached, true, "the wiki answered — it just has no such page");
+  assert.equal(miss.found, false);
+  assert.match(miss.result, /the company wiki has no page with slug "nope"/);
+
+  await call(page, { slug: "unreachable" });
+  const failed = last("brain_page");
+  assert.equal(failed.reached, false);
+  assert.equal(failed.found, false);
+  assert.match(failed.result, /could not reach the company wiki/);
+  assert.doesNotMatch(
+    failed.result,
+    /has no page/,
+    "a failed lookup must never be reported as the wiki having no such page",
+  );
+});
+
+test("brain_recent separates a feed, a genuinely empty window, and an unreachable wiki", async () => {
+  const { tools, last } = brainToolFixture();
+  const recent = tools.find((t) => t.name === "brain_recent");
+
+  await call(recent, {});
+  const feed = last("brain_recent");
+  assert.equal(feed.reached, true);
+  assert.equal(feed.found, true);
+  assert.match(feed.result, /shipped the ingest rewrite/);
+
+  await call(recent, { days: 0 });
+  const empty = last("brain_recent");
+  assert.equal(empty.reached, true, "the wiki answered — the window really is empty");
+  assert.equal(empty.found, false);
+  assert.match(empty.result, /the company wiki has no recent activity recorded/);
+  assert.equal(last("brain_recent", "tool_call").days, 0, "a zero-day window still reaches the audit trail");
+
+  await call(recent, { days: 99 });
+  const failed = last("brain_recent");
+  assert.equal(failed.reached, false);
+  assert.equal(failed.found, false);
+  assert.match(failed.result, /could not reach the company wiki/);
+  assert.doesNotMatch(
+    failed.result,
+    /no recent activity recorded/,
+    "an outage must never be reported to the agent as an idle company",
+  );
 });

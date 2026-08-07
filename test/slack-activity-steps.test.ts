@@ -36,7 +36,10 @@ test("internal context activity uses user-centered language", () => {
 test("every Pi tool schema action and approval-gate form has an explicit payload-safe policy", () => {
   const tools = [
     ...createPiTools({ current: null }, { controlTools: true }),
-    ...createPiTools({ current: null }, { controlTools: true, surfaceTools: true }),
+    ...createPiTools(
+      { current: null },
+      { brainPage: true, brainQuery: true, brainRecent: true, controlTools: true, surfaceTools: true },
+    ),
   ];
   const seen = new Set<string>();
   for (const tool of tools) {

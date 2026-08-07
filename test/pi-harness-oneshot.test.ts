@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
@@ -28,6 +28,7 @@ import {
 import { DEFAULT_AGENT_MODEL_ID, auxiliaryModelFor, getRequiredModel, resolveModel } from "../src/model/pi-models.ts";
 import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import type { SessionEntry } from "../src/types.ts";
+import { coreToolOptions } from "../src/harness/pi-tools.ts";
 import { testConfig } from "./support/test-config.ts";
 
 function countTempDirs(prefix: string): number {
@@ -121,6 +122,11 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
       scratchExecEnabled: true,
       sharedOwnerAuthIsolation: true,
       reachExecEnabled: true,
+      brainMcpUrl: "https://brain.test",
+      brainRoClientId: "ro",
+      brainRoClientSecret: "shh",
+      brainPageTool: "wiki_page",
+      brainRecentTool: "wiki_recent",
       signingSecret: "sek",
       apiBaseUrl: "https://core.test",
       turnWallClockMs: 111_000,
@@ -140,6 +146,9 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
     scratchExec: true,
     ownerAuthExec: true,
     reachExec: true,
+    brainQuery: true,
+    brainPage: true,
+    brainRecent: true,
     controlTools: true,
     turnWallClockMs: 111_000,
     execTimeoutMs: 22_000,
@@ -147,6 +156,113 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
     backgroundJobTtlMs: 44_000,
     backgroundJobTtlMaxMs: 55_000,
   });
+});
+
+test("piHarnessConfigOptions leaves brainQuery off unless the read-only brain is fully configured", () => {
+  assert.equal(piHarnessConfigOptions(testConfig()).brainQuery, false);
+  assert.equal(piHarnessConfigOptions(testConfig({ brainMcpUrl: "https://brain.test" })).brainQuery, false);
+  assert.equal(
+    piHarnessConfigOptions(testConfig({ brainMcpUrl: "https://brain.test", brainRoClientId: "ro" })).brainQuery,
+    false,
+    "client id alone isn't enough",
+  );
+  assert.equal(
+    piHarnessConfigOptions(testConfig({ brainMcpUrl: "https://brain.test", brainBearerToken: "tok" })).brainQuery,
+    true,
+    "a static bearer token is a complete credential",
+  );
+  assert.equal(
+    piHarnessConfigOptions(
+      testConfig({
+        brainAuth: "oauth-client-credentials",
+        brainMcpUrl: "https://brain.test",
+        brainBearerToken: "tok",
+      }),
+    ).brainQuery,
+    false,
+    "a bearer token cannot satisfy explicit OAuth auth",
+  );
+  assert.equal(
+    piHarnessConfigOptions(
+      testConfig({
+        brainAuth: "bearer",
+        brainMcpUrl: "https://brain.test",
+        brainRoClientId: "ro",
+        brainRoClientSecret: "secret",
+      }),
+    ).brainQuery,
+    false,
+    "OAuth credentials cannot satisfy explicit bearer auth",
+  );
+  assert.equal(
+    piHarnessConfigOptions(testConfig({ brainBearerToken: "tok" })).brainQuery,
+    false,
+    "a bearer token without an MCP URL is not enough",
+  );
+});
+
+test("piHarnessConfigOptions leaves brainPage and brainRecent off unless the tool name AND credentials are set", () => {
+  const credentialed = { brainMcpUrl: "https://brain.test", brainBearerToken: "tok" } as const;
+  const both = piHarnessConfigOptions(
+    testConfig({ ...credentialed, brainPageTool: "wiki_page", brainRecentTool: "wiki_recent" }),
+  );
+  assert.equal(both.brainPage, true, "tool name plus a complete credential turns brainPage on");
+  assert.equal(both.brainRecent, true, "tool name plus a complete credential turns brainRecent on");
+
+  const noNames = piHarnessConfigOptions(testConfig(credentialed));
+  assert.equal(noNames.brainQuery, true, "the brain itself is configured");
+  assert.equal(noNames.brainPage, false, "credentials without a page tool name register nothing");
+  assert.equal(noNames.brainRecent, false, "credentials without a recent tool name register nothing");
+
+  const onlyPage = piHarnessConfigOptions(testConfig({ ...credentialed, brainPageTool: "wiki_page" }));
+  assert.equal(onlyPage.brainPage, true, "each tool name gates only its own tool");
+  assert.equal(onlyPage.brainRecent, false);
+  const onlyRecent = piHarnessConfigOptions(testConfig({ ...credentialed, brainRecentTool: "wiki_recent" }));
+  assert.equal(onlyRecent.brainRecent, true);
+  assert.equal(onlyRecent.brainPage, false);
+
+  const noCreds = piHarnessConfigOptions(
+    testConfig({ brainMcpUrl: "https://brain.test", brainPageTool: "wiki_page", brainRecentTool: "wiki_recent" }),
+  );
+  assert.equal(noCreds.brainPage, false, "a tool name without credentials must not register an inert tool");
+  assert.equal(noCreds.brainRecent, false);
+
+  const halfCreds = piHarnessConfigOptions(
+    testConfig({
+      brainMcpUrl: "https://brain.test",
+      brainRoClientId: "ro",
+      brainPageTool: "wiki_page",
+      brainRecentTool: "wiki_recent",
+    }),
+  );
+  assert.equal(halfCreds.brainPage, false, "client id without a secret isn't a credential");
+  assert.equal(halfCreds.brainRecent, false);
+
+  const noUrl = piHarnessConfigOptions(
+    testConfig({ brainBearerToken: "tok", brainPageTool: "wiki_page", brainRecentTool: "wiki_recent" }),
+  );
+  assert.equal(noUrl.brainPage, false, "no MCP URL means nothing to call");
+  assert.equal(noUrl.brainRecent, false);
+});
+
+test("the pi harness forwards every core tool option into createPiTools, so none is silently dropped", () => {
+  const options = coreToolOptions(
+    testConfig({
+      brainMcpUrl: "https://brain.test",
+      brainBearerToken: "tok",
+      brainPageTool: "wiki_page",
+      brainRecentTool: "wiki_recent",
+      signingSecret: "sek",
+      apiBaseUrl: "https://core.test",
+    }),
+  );
+  const source = readFileSync(new URL("../src/harness/pi-harness.ts", import.meta.url), "utf8");
+  const start = source.indexOf("createPiTools(ref, {");
+  assert.ok(start > 0, "found the harness's createPiTools call");
+  const literal = source.slice(start, source.indexOf("noTools:", start));
+  for (const key of Object.keys(options)) {
+    assert.match(literal, new RegExp(`\\b${key}\\b`), `${key} must reach createPiTools, or its tool never registers`);
+  }
 });
 
 test("piHarnessConfigOptions leaves controlTools off unless a self-API (signing secret + api base) is configured", () => {
