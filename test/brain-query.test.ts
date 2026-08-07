@@ -14,7 +14,14 @@ interface FakeCall {
 }
 
 function fakeBrain(
-  opts: { failNetwork?: boolean; failQuery?: boolean; queryErrorText?: string; seed?: string[] } = {},
+  opts: {
+    failNetwork?: boolean;
+    failQuery?: boolean;
+    queryErrorText?: string;
+    seed?: string[];
+    httpStatus?: Record<string, number>;
+    plainErrorBody?: boolean;
+  } = {},
 ) {
   const calls: FakeCall[] = [];
   let mints = 0;
@@ -23,6 +30,15 @@ function fakeBrain(
     status: 200,
     async text() {
       return JSON.stringify(obj);
+    },
+  });
+  const httpError = (status: number, id: unknown, message: string) => ({
+    ok: false,
+    status,
+    async text() {
+      return opts.plainErrorBody
+        ? "<html><body>not found</body></html>"
+        : JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message } });
     },
   });
   const facts = opts.seed ?? [
@@ -38,10 +54,15 @@ function fakeBrain(
       calls.push({ kind: "token" });
       return resp({ access_token: `ro-tok-${mints}`, expires_in: 3600 });
     }
-    const body = JSON.parse(init.body) as { params: { name: string; arguments?: Record<string, unknown> } };
+    const body = JSON.parse(init.body) as {
+      id?: unknown;
+      params: { name: string; arguments?: Record<string, unknown> };
+    };
     const name = body.params.name;
     const args = body.params.arguments ?? {};
     calls.push({ kind: "mcp", tool: name, args });
+    const status = opts.httpStatus?.[name];
+    if (status) return httpError(status, body.id, `unknown page: ${String(args.slug ?? "")}`);
     if (name === "whoami") {
       return resp({
         result: { structuredContent: { source_id: "team-brain", federated_read: ["team-brain", "shared"] } },
@@ -431,4 +452,58 @@ test("recent reports a failed lookup when the recent tool is not configured", as
   });
   assert.deepEqual(await svc.recent(7), { ok: false });
   assert.equal(brain.calls.length, 0);
+});
+
+const wikiPageSvc = (brain: ReturnType<typeof fakeBrain>, audit?: ReturnType<typeof createAuditLog>) =>
+  createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    recentTool: "wiki_recent",
+    fetchImpl: brain.fetchImpl,
+    ...(audit ? { audit } : {}),
+  });
+
+test("an HTTP 404 on page is the wiki saying the page does not exist: empty, audited empty, never a failure", async () => {
+  const brain = fakeBrain({ httpStatus: { wiki_page: 404 } });
+  const audit = createAuditLog();
+  assert.deepEqual(await wikiPageSvc(brain, audit).page("no-such-entity", "U1"), { ok: true, body: null });
+  const events = await audit.events();
+  assert.deepEqual(
+    events.map((e) => [e.action, e.status]),
+    [["brain.wiki_page", "empty"]],
+    "a page the wiki does not have is an empty read, not an error",
+  );
+});
+
+test("an HTTP 409 (page unavailable) stays a failure — possibly transient is never reported as absent", async () => {
+  const brain = fakeBrain({ httpStatus: { wiki_page: 409 } });
+  const audit = createAuditLog();
+  assert.deepEqual(await wikiPageSvc(brain, audit).page("atlas", "U1"), { ok: false });
+  const events = await audit.events();
+  assert.equal(events.length, 1);
+  assert.ok(events[0]?.status?.startsWith("error:"), `409 is audited as an error, got: ${events[0]?.status}`);
+});
+
+test("an HTTP 500 on page stays a failure", async () => {
+  const brain = fakeBrain({ httpStatus: { wiki_page: 500 } });
+  assert.deepEqual(await wikiPageSvc(brain).page("atlas"), { ok: false });
+});
+
+test("an HTTP 404 without a JSON-RPC error body is a transport failure, not an absent page", async () => {
+  const brain = fakeBrain({ httpStatus: { wiki_page: 404 }, plainErrorBody: true });
+  const audit = createAuditLog();
+  assert.deepEqual(
+    await wikiPageSvc(brain, audit).page("atlas", "U1"),
+    { ok: false },
+    "a routing 404 must not make every page look absent",
+  );
+  const events = await audit.events();
+  assert.ok(events[0]?.status?.startsWith("error:"), `got: ${events[0]?.status}`);
+});
+
+test("an HTTP 404 on recent stays a failure — an absent feed is not an idle company", async () => {
+  const brain = fakeBrain({ httpStatus: { wiki_recent: 404 } });
+  assert.deepEqual(await wikiPageSvc(brain).recent(7), { ok: false });
 });

@@ -71,6 +71,8 @@ function parseMcpEnvelope(text: string, contentType: string | null | undefined, 
   return safeJson(text) as McpEnvelope | null;
 }
 
+export class BrainNotFoundError extends Error {}
+
 export interface McpResult {
   content?: Array<{ type?: string; text?: string }>;
   structuredContent?: unknown;
@@ -144,7 +146,13 @@ export function createBrainMcp(opts: { mcpUrl: string; fetchImpl?: BrainFetch; n
         },
         body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
       });
-      if (!res.ok) throw new Error(`brain ${name} failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        const failure =
+          res.status === 404 ? parseMcpEnvelope(await res.text(), res.headers?.get("content-type"), id) : null;
+        if (failure?.error)
+          throw new BrainNotFoundError(`brain ${name} not found: ${failure.error.message ?? "unknown"}`);
+        throw new Error(`brain ${name} failed (HTTP ${res.status})`);
+      }
       const parsed = parseMcpEnvelope(await res.text(), res.headers?.get("content-type"), id);
       if (!parsed) throw new Error(`brain ${name} returned non-JSON`);
       if (parsed.error) throw new Error(`brain ${name} error: ${parsed.error.message ?? "unknown"}`);

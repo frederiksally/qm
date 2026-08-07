@@ -1,5 +1,5 @@
 import type { AuditLog } from "../audit/audit-log.ts";
-import { createBrainMcp, parseWhoami, resultText, type BrainFetch } from "./brain-mcp.ts";
+import { BrainNotFoundError, createBrainMcp, parseWhoami, resultText, type BrainFetch } from "./brain-mcp.ts";
 import { errMessage } from "../util/errors.ts";
 
 const DEFAULT_QUERY_LIMIT = 20;
@@ -116,6 +116,10 @@ export function createBrainQueryService(opts: BrainQueryOptions): BrainQueryServ
         audit(pageTool, body ? "ok" : "empty", principalId);
         return { ok: true, body: body || null };
       } catch (e) {
+        if (e instanceof BrainNotFoundError) {
+          audit(pageTool, "empty", principalId);
+          return { ok: true, body: null };
+        }
         audit(pageTool, `error: ${errMessage(e)}`, principalId);
         return FAILED;
       }

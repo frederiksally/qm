@@ -9,7 +9,7 @@ import { buildApp } from "../src/wiring.ts";
 import type { TurnRequest } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 import { createBrainMemoryService, sourceForScope, type BrainFetch } from "../src/memory/brain-memory-service.ts";
-import { createBrainMcp } from "../src/memory/brain-mcp.ts";
+import { BrainNotFoundError, createBrainMcp } from "../src/memory/brain-mcp.ts";
 import { createBrainClientStore, type BrainClient } from "../src/memory/brain-client-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createMemoryService } from "../src/memory/memory-service.ts";
@@ -586,5 +586,53 @@ test("secrets never enter the audit log (host + scope + tool only)", async () =>
   assert.ok(!dump.includes("tok-"), "access tokens must never be audited");
   for (const e of await audit.events()) {
     if (e.action.startsWith("brain.")) assert.equal(e.resource, "brain.acme.test");
+  }
+});
+
+const statusFetch =
+  (status: number, body: string): BrainFetch =>
+  async (url) => {
+    if (url.endsWith("/token"))
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ access_token: "t", expires_in: 3600 });
+        },
+      };
+    return {
+      ok: false,
+      status,
+      headers: { get: () => "application/json" },
+      async text() {
+        return body;
+      },
+    };
+  };
+
+const rpcNotFound = JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "unknown page: ghost" } });
+
+test("mcpCall raises BrainNotFoundError for an HTTP 404 that carries a JSON-RPC error", async () => {
+  const mcp = createBrainMcp({ mcpUrl: MCP_URL, fetchImpl: statusFetch(404, rpcNotFound) });
+  const token = await mcp.mintToken("c", "s");
+  await assert.rejects(() => mcp.call(token, "wiki_page", { slug: "ghost" }), BrainNotFoundError);
+  await assert.rejects(() => mcp.call(token, "wiki_page", { slug: "ghost" }), /unknown page: ghost/);
+});
+
+test("mcpCall keeps a bodyless 404 and every other non-ok status on the generic failure path", async () => {
+  const routing = createBrainMcp({ mcpUrl: MCP_URL, fetchImpl: statusFetch(404, "<html>nope</html>") });
+  const routingToken = await routing.mintToken("c", "s");
+  const routingErr = await routing.call(routingToken, "wiki_page", {}).catch((e: unknown) => e);
+  assert.ok(routingErr instanceof Error);
+  assert.equal(routingErr instanceof BrainNotFoundError, false, "a route-level 404 is not a missing entity");
+  assert.match(routingErr.message, /failed \(HTTP 404\)/);
+
+  for (const status of [401, 409, 500]) {
+    const mcp = createBrainMcp({ mcpUrl: MCP_URL, fetchImpl: statusFetch(status, rpcNotFound) });
+    const token = await mcp.mintToken("c", "s");
+    const err = await mcp.call(token, "wiki_page", {}).catch((e: unknown) => e);
+    assert.ok(err instanceof Error);
+    assert.equal(err instanceof BrainNotFoundError, false, `HTTP ${status} must stay a generic failure`);
+    assert.match(err.message, new RegExp(`failed \\(HTTP ${status}\\)`));
   }
 });
