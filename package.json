@@ -78,15 +78,16 @@
   },
   "overrides": {
     "@hono/node-server": "2.0.10",
+    "hono": "4.12.34",
     "@fastify/ajv-compiler": {
-      "fast-uri": "3.1.4"
+      "fast-uri": "3.1.5"
     },
     "ajv": {
-      "fast-uri": "3.1.4"
+      "fast-uri": "3.1.5"
     },
     "brace-expansion": "5.0.8",
     "fast-json-stringify": {
-      "fast-uri": "4.1.1"
+      "fast-uri": "4.1.2"
     },
     "protobufjs": "7.6.5"
   },
