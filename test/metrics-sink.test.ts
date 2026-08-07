@@ -49,13 +49,20 @@ test("in-RAM metrics sink: updateByRunId patches the deliver/inflight report-bac
   const s1 = scopeId("channel", "C1");
 
   sink.record({ totalMs: 100, status: "ok", scopeLabel: s1, sessionId: "sess-A", runId: "run-X" });
-  await sink.updateByRunId("run-X", { deliverMs: 42, slackInflightMs: 7 });
+  await sink.updateByRunId("run-X", {
+    deliverMs: 42,
+    slackInflightMs: 7,
+    slackStreamReceived: 3,
+    slackStreamReceivedInstance: "instance-B",
+  });
   await sink.updateByRunId("run-missing", { deliverMs: 999 });
 
   const rows = await sink.list({ limit: 100 });
   const patched = rows.find((m) => m.runId === "run-X")!;
   assert.equal(patched.deliverMs, 42, "deliverMs patched by runId");
   assert.equal(patched.slackInflightMs, 7, "slackInflightMs patched by runId");
+  assert.equal(patched.slackStreamReceived, 3);
+  assert.equal(patched.slackStreamReceivedInstance, "instance-B");
 });
 
 test("in-RAM metrics sink: list({ sessionId }) filters to one session", async () => {

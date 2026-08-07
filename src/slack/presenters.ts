@@ -64,6 +64,7 @@ export function stripAckPrefix(text: string, ack: string | undefined): string {
 }
 
 export interface AckPresenter {
+  activate(): void;
   onFirstBlock(text: string): void;
   onSurfacePosted(): void;
   postedAck(): string | undefined;
@@ -73,11 +74,13 @@ export interface AckPresenter {
 
 export function createAckPresenter(deps: {
   postAck(text: string): Promise<void>;
-  addReaction(emoji: string): Promise<void>;
-  removeReaction(emoji: string): Promise<void>;
+  showBusy(emoji: string): Promise<void>;
+  clearBusy(emoji: string): Promise<void>;
   emojiCandidates?: readonly string[];
   emojiPick?: Promise<string | undefined>;
   reactionDelayMs?: number;
+  deferActivation?: boolean;
+  firstBlockBehavior?: "post" | "hold";
   random?(): number;
 }): AckPresenter {
   const candidates = deps.emojiCandidates?.length ? deps.emojiCandidates : DEFAULT_ACK_REACTIONS;
@@ -93,29 +96,36 @@ export function createAckPresenter(deps: {
   let ackPosted: string | undefined;
   let sawFirstBlock = false;
   let chain: Promise<void> = Promise.resolve();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const enqueue = (op: () => Promise<void>): void => {
     chain = chain.then(op).catch(() => {});
   };
-  const timer = setTimeout(() => {
-    if (settled || ackPosted || reactionCancelled) return;
-    emoji = pickResult || randomEmoji();
-    reactionApplied = true;
-    enqueue(() => deps.addReaction(emoji));
-  }, deps.reactionDelayMs ?? 2_000);
-  timer.unref?.();
+  const activate = (): void => {
+    if (timer || settled) return;
+    timer = setTimeout(() => {
+      if (settled || ackPosted || reactionCancelled) return;
+      emoji = pickResult || randomEmoji();
+      reactionApplied = true;
+      enqueue(() => deps.showBusy(emoji));
+    }, deps.reactionDelayMs ?? 2_000);
+    timer.unref?.();
+  };
+  if (!deps.deferActivation) activate();
   const clearReaction = (): void => {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     reactionCancelled = true;
     if (!reactionApplied) return;
     reactionApplied = false;
-    enqueue(() => deps.removeReaction(emoji));
+    enqueue(() => deps.clearBusy(emoji));
   };
   return {
+    activate,
     onFirstBlock(text) {
       if (sawFirstBlock || settled) return;
       sawFirstBlock = true;
       const ack = text.trim();
       if (!ack) return;
+      if (deps.firstBlockBehavior === "hold") return;
       clearReaction();
       enqueue(async () => {
         await deps.postAck(ack);

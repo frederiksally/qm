@@ -16,6 +16,10 @@ export interface TurnMetricSample {
   queueMs?: number;
   deliverMs?: number;
   slackInflightMs?: number;
+  slackStreamPublished?: number;
+  slackStreamReceived?: number;
+  slackStreamPublishedInstance?: string;
+  slackStreamReceivedInstance?: string;
   resumedFromSeq?: number;
   status: string;
   scopeLabel: ScopeId;
@@ -64,6 +68,8 @@ export function isStablePrefixMiss(
 interface TurnMetricPatch {
   deliverMs?: number;
   slackInflightMs?: number;
+  slackStreamReceived?: number;
+  slackStreamReceivedInstance?: string;
 }
 
 export interface MetricsSink {
@@ -86,6 +92,9 @@ export function createMetricsSink(): MetricsSink {
         if (row.runId !== runId) continue;
         if (patch.deliverMs !== undefined) row.deliverMs = patch.deliverMs;
         if (patch.slackInflightMs !== undefined) row.slackInflightMs = patch.slackInflightMs;
+        if (patch.slackStreamReceived !== undefined) row.slackStreamReceived = patch.slackStreamReceived;
+        if (patch.slackStreamReceivedInstance !== undefined)
+          row.slackStreamReceivedInstance = patch.slackStreamReceivedInstance;
         break;
       }
       return Promise.resolve();

@@ -17,6 +17,7 @@ export interface DeliveryStore {
   ack(id: string, at: number, slackApiMs?: number): Promise<void>;
   ackByKey(idempotencyKey: string, at: number): Promise<void>;
   setEditRefByKey(idempotencyKey: string, editRef: string): Promise<void>;
+  setStreamByKey(idempotencyKey: string, stream: { channel: string; ts: string; unfinished: true }): Promise<void>;
   get(id: string): Promise<Delivery | null>;
   recordRecipientThread(id: string, recipientThreadRef: string, at: number): Promise<void>;
   listByRecipientThread(recipientThreadRef: string, opts?: { limit?: number }): Promise<Delivery[]>;
@@ -101,6 +102,12 @@ export function createDeliveryStore(): DeliveryStore {
       const existingId = byKey.get(idempotencyKey);
       const d = existingId ? deliveries.get(existingId) : undefined;
       if (d && d.deliveredAt === null) d.destination = { ...d.destination, editRef };
+    },
+    async setStreamByKey(idempotencyKey, stream) {
+      const id = byKey.get(idempotencyKey);
+      if (!id) return;
+      const d = deliveries.get(id);
+      if (d && d.deliveredAt === null) d.destination = { ...d.destination, editRef: stream.ts, stream };
     },
     async get(id) {
       return deliveries.get(id) ?? null;

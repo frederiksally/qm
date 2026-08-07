@@ -12,17 +12,20 @@ import {
   renderTaskList,
   slackReplyArgs,
   slackSectionBlocks,
+  setThreadTitle,
   stripReactionDirectives,
   toSlackMrkdwn,
   uploadAttachments,
   uploadFailureNote,
   applyReactions,
+  approvalMessage,
 } from "./lib.ts";
 import type { SlackCoreClient } from "../api/slack-core-client.ts";
 import type { Delivery } from "../types.ts";
 import type { CoreBridge } from "./core-bridge.ts";
 import type { Mirror } from "./mirror.ts";
 import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
+import { feedbackBlocks } from "./feedback.ts";
 
 const DELIVERY_CLAIM_MS = 15_000;
 
@@ -122,15 +125,22 @@ export function createDeliveryPoller(deps: {
               }
             };
             const taskList = d.destination.taskList?.length ? renderTaskList(d.destination.taskList) : undefined;
-            const taskListBlocks = taskList
-              ? [
-                  ...slackSectionBlocks(text),
-                  { type: "section", text: { type: "mrkdwn", text: taskList } },
-                  ...(d.destination.debugFooter
-                    ? [{ type: "context", elements: [{ type: "mrkdwn", text: d.destination.debugFooter }] }]
-                    : []),
-                ]
+            const approval = d.destination.pendingApprovals?.length
+              ? approvalMessage(d.destination.pendingApprovals)
               : undefined;
+            let taskListBlocks: Array<Record<string, unknown>> | undefined;
+            if (approval) taskListBlocks = [...slackSectionBlocks(text), ...approval.blocks];
+            else if (taskList)
+              taskListBlocks = [
+                ...slackSectionBlocks(text),
+                { type: "section", text: { type: "mrkdwn", text: taskList } },
+                ...(d.destination.debugFooter
+                  ? [{ type: "context", elements: [{ type: "mrkdwn", text: d.destination.debugFooter }] }]
+                  : []),
+              ];
+            const surfaceBlocks = runId
+              ? [...(taskListBlocks ?? slackSectionBlocks(text)), ...feedbackBlocks(runId)]
+              : taskListBlocks;
             if (!text.trim()) {
               if (taskList) {
                 let preserved = false;
@@ -155,14 +165,32 @@ export function createDeliveryPoller(deps: {
                     blocks: [{ type: "section", text: { type: "mrkdwn", text: taskList } }],
                   });
                   mirrorSelfPost(channel, posted?.ts, taskList, { sub: threadTs });
+                  if (!threadTs && channel.startsWith("D") && posted?.ts)
+                    await setThreadTitle(client, channel, String(posted.ts), taskList);
                 }
               } else if (d.destination.editRef) {
                 await client.chat
                   .delete({ channel, ts: d.destination.editRef })
                   .catch(swallowAs("slack: delete status placeholder", undefined));
               }
-              await replayAttachments(threadTs);
+              await replayAttachments(d.destination.stream?.ts ?? threadTs ?? d.destination.editRef);
               if (d.attachments?.length && threadTs) threads.mark(channel, threadTs, true);
+              return undefined;
+            }
+            if (d.destination.stream?.unfinished) {
+              const stream = d.destination.stream;
+              await client.chat
+                .stopStream({ channel: stream.channel, ts: stream.ts })
+                .catch(swallowAs("slack: stop recovered stream", undefined));
+              await client.chat.update({
+                channel: stream.channel,
+                ts: stream.ts,
+                text,
+                ...(surfaceBlocks ? { blocks: surfaceBlocks } : {}),
+                ...botIdentityArgs(),
+              });
+              mirrorSelfPost(stream.channel, stream.ts, text, { sub: threadTs, editedAt: Date.now() });
+              await replayAttachments(stream.ts);
               return undefined;
             }
             if (d.destination.editRef) {
@@ -172,20 +200,20 @@ export function createDeliveryPoller(deps: {
                   channel,
                   ts: d.destination.editRef,
                   text,
-                  ...(taskListBlocks ? { blocks: taskListBlocks } : {}),
+                  ...(surfaceBlocks ? { blocks: surfaceBlocks } : {}),
                   ...botIdentityArgs(),
                   ...(unfurlLinks !== undefined ? { unfurl_links: unfurlLinks, unfurl_media: unfurlLinks } : {}),
                 });
                 if (threadTs) threads.mark(channel, threadTs, true);
                 mirrorSelfPost(channel, d.destination.editRef, text, { sub: threadTs, editedAt: Date.now() });
-                await replayAttachments(threadTs);
+                await replayAttachments(threadTs ?? d.destination.editRef);
                 return undefined;
               } catch (e) {
                 swallow("slack: finalize recovered reply in place", e);
               }
             }
             const footerBlocks =
-              taskListBlocks ??
+              surfaceBlocks ??
               (d.destination.debugFooter && text.length <= 2900
                 ? [
                     { type: "section", text: { type: "mrkdwn", text } },
@@ -208,6 +236,8 @@ export function createDeliveryPoller(deps: {
             );
             const root = threadTs ?? (res?.ts ? String(res.ts) : undefined);
             if (root) threads.mark(channel, root, true);
+            if (!threadTs && channel.startsWith("D") && res?.ts)
+              await setThreadTitle(client, channel, String(res.ts), text);
             if (!d.destination.identity) mirrorSelfPost(channel, res?.ts, text, { sub: threadTs });
             await replayAttachments(root);
             return undefined;
@@ -238,6 +268,7 @@ export function createDeliveryPoller(deps: {
                 slackReplyArgs(channel, text, undefined, { unfurlLinks: d.destination.unfurlLinks }),
               );
               mirrorSelfPost(channel, posted?.ts, text, { kind: "dm" });
+              if (posted?.ts) await setThreadTitle(client, channel, String(posted.ts), text);
             }
             if (d.attachments?.length) {
               try {

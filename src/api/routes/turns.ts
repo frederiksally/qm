@@ -63,8 +63,16 @@ async function postRunDeliveryState(ctx: ApiCtx): Promise<void> {
   const { res, app, body } = ctx;
   const id = ctx.params.id!;
   const editRef = isObj(body) && typeof body.editRef === "string" ? body.editRef : "";
-  if (!id || !editRef) return sendJson(res, 400, { error: "bad_request", message: "editRef required" });
-  const found = await app.setRunDeliveryState(id, { editRef });
+  const rawSurface = isObj(body) && isObj(body.surface) ? body.surface : undefined;
+  const kind = rawSurface?.kind === "message" || rawSurface?.kind === "stream" ? rawSurface.kind : undefined;
+  const ts = typeof rawSurface?.ts === "string" ? rawSurface.ts : undefined;
+  const channel = typeof rawSurface?.channel === "string" ? rawSurface.channel : undefined;
+  if (!id || (!editRef && !(kind && ts)))
+    return sendJson(res, 400, { error: "bad_request", message: "delivery surface required" });
+  const found = await app.setRunDeliveryState(id, {
+    ...(editRef ? { editRef } : {}),
+    ...(kind && ts ? { surface: { kind, ts, ...(channel ? { channel } : {}) } } : {}),
+  });
   if (!found) return sendJson(res, 404, { error: "not_found" });
   return sendJson(res, 200, { ok: true });
 }
@@ -138,13 +146,25 @@ async function postTurnMetrics(ctx: ApiCtx): Promise<void> {
     typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
   const deliverMs = isObj(body) ? num(body.deliverMs) : undefined;
   const slackInflightMs = isObj(body) ? num(body.slackInflightMs) : undefined;
-  if (deliverMs === undefined && slackInflightMs === undefined) {
-    return sendJson(res, 400, { error: "bad_request", message: "deliverMs or slackInflightMs required" });
+  const slackStreamReceived = isObj(body) ? num(body.slackStreamReceived) : undefined;
+  const slackStreamReceivedInstance =
+    isObj(body) && typeof body.slackStreamReceivedInstance === "string"
+      ? body.slackStreamReceivedInstance.trim().slice(0, 200)
+      : "";
+  if (
+    deliverMs === undefined &&
+    slackInflightMs === undefined &&
+    slackStreamReceived === undefined &&
+    !slackStreamReceivedInstance
+  ) {
+    return sendJson(res, 400, { error: "bad_request", message: "turn metric field required" });
   }
   await deps.metrics
     ?.updateByRunId(runId, {
       ...(deliverMs !== undefined ? { deliverMs } : {}),
       ...(slackInflightMs !== undefined ? { slackInflightMs } : {}),
+      ...(slackStreamReceived !== undefined ? { slackStreamReceived } : {}),
+      ...(slackStreamReceivedInstance ? { slackStreamReceivedInstance } : {}),
     })
     .catch(() => undefined);
   return sendJson(res, 200, { ok: true });

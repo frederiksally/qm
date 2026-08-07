@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { once } from "node:events";
 import { createServer } from "../src/api/server.ts";
 import { buildApp } from "../src/wiring.ts";
 import { signedHeaders } from "../plugins/chassis/src/core-client.ts";
@@ -20,6 +21,7 @@ const core = createServer(built.app, {
   metrics: built.metrics,
 });
 core.listen(0);
+await once(core, "listening");
 const coreBase = `http://localhost:${(core.address() as AddressInfo).port}`;
 
 after(async () => {
@@ -38,7 +40,12 @@ test("POST /v1/turns/:runId/metrics patches the row by runId (source-authed)", a
     runId: "run-1",
   });
 
-  const raw = JSON.stringify({ deliverMs: 42, slackInflightMs: 7 });
+  const raw = JSON.stringify({
+    deliverMs: 42,
+    slackInflightMs: 7,
+    slackStreamReceived: 3,
+    slackStreamReceivedInstance: "instance-B",
+  });
   const r = await fetch(`${coreBase}${path("run-1")}`, {
     method: "POST",
     headers: signedHeaders(SECRET, "POST", path("run-1"), raw),
@@ -51,6 +58,8 @@ test("POST /v1/turns/:runId/metrics patches the row by runId (source-authed)", a
   const patched = rows.find((m) => m.runId === "run-1")!;
   assert.equal(patched.deliverMs, 42, "deliverMs landed on the row");
   assert.equal(patched.slackInflightMs, 7, "slackInflightMs landed on the row");
+  assert.equal(patched.slackStreamReceived, 3);
+  assert.equal(patched.slackStreamReceivedInstance, "instance-B");
 });
 
 test("POST /v1/turns/:runId/metrics rejects an unsigned request 401", async () => {

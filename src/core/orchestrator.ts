@@ -12,6 +12,7 @@ import type {
 } from "../types.ts";
 import { scopeId as toScopeId, personalScope } from "../types.ts";
 import { turnOriginRequestFields } from "./turn-origin.ts";
+import { runtimeInstanceId } from "../config.ts";
 import { resolveTurnFastMode } from "./turn-options.ts";
 import { orgId } from "../config.ts";
 import { renderGatewayContext } from "./gateway-context.ts";
@@ -1709,6 +1710,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
+          ...(deps.brain ? { brain: deps.brain } : {}),
           sessionHistory: {
             search: async (q: string, limit?: number) =>
               searchSessionEntries(
@@ -2003,6 +2005,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const turnStart = Date.now();
         let firstChunkAt: number | undefined;
         let lastChunkAt: number | undefined;
+        let slackStreamPublished = 0;
         const emittedEntries: SessionEntry[] = [];
         const syntheticPrompt =
           (input.proactiveOpener && !input.text.trim()) || automatedTurn || partial || approvalReplay;
@@ -2257,7 +2260,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               const now = Date.now();
               if (firstChunkAt === undefined) firstChunkAt = now;
               lastChunkAt = now;
-              if (input.runId && deps.turnStream && !input.surfaceTools) deps.turnStream.publish(input.runId, chunk);
+              if (input.runId && deps.turnStream && !input.surfaceTools) {
+                deps.turnStream.publish(input.runId, chunk);
+                if (input.surface === "slack") slackStreamPublished += 1;
+              }
               if (input.surfaceTools && spineFirstBlockOpen && spineFirstBlock.length < FIRST_BLOCK_CAPTURE_MAX_CHARS)
                 spineFirstBlock += chunk;
             },
@@ -2544,6 +2550,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(input.runId ? { runId: input.runId } : {}),
           ...(firstChunkAt !== undefined ? { ttftMs: firstChunkAt - turnStart } : {}),
           ...(firstChunkAt !== undefined ? { streamMs: (lastChunkAt ?? firstChunkAt) - firstChunkAt } : {}),
+          ...(input.surface === "slack"
+            ? { slackStreamPublished, slackStreamPublishedInstance: runtimeInstanceId() }
+            : {}),
           ...(typeof input.intakePreambleMs === "number" ? { intakePreambleMs: input.intakePreambleMs } : {}),
           ...(typeof input.clientSentAt === "number"
             ? { dispatchMs: Math.max(0, coreReceivedAt - input.clientSentAt) }

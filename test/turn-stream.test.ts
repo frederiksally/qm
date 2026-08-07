@@ -440,3 +440,22 @@ test("a stale double-unsubscribe cannot evict a newer subscriber's listener set"
   stream.markSurfacePosted("r1");
   assert.equal(posted, true, "the newer subscriber must still hear events after a stale unsubscribe fires twice");
 });
+
+test("delta subscribers receive ordered text and one throw cannot break another", () => {
+  const stream = createTurnStream();
+  const received: string[] = [];
+  stream.subscribe("r1", { onDelta: () => void (() => { throw new Error("broken"); })() });
+  stream.subscribe("r1", { onDelta: (delta) => received.push(delta) });
+  stream.publish("r1", "one");
+  stream.publish("r1", "two");
+  assert.deepEqual(received, ["one", "two"]);
+});
+
+test("publish without begin notifies a subscriber and establishes liveness", () => {
+  const stream = createTurnStream();
+  let received = "";
+  stream.subscribe("r1", { onDelta: (delta) => (received += delta) });
+  stream.publish("r1", "text");
+  assert.equal(received, "text");
+  assert.equal(stream.alive("r1"), true);
+});

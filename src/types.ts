@@ -72,6 +72,8 @@ export interface Session {
   archived?: boolean;
   pinned?: boolean;
   color?: string;
+  forkedFrom?: { sessionId: string; title?: string | null };
+  forkBoundarySeq?: number;
   lastActivityAt?: number;
   hasEntries?: boolean;
   working?: boolean;
@@ -164,6 +166,8 @@ export interface Destination {
   audienceScopeId?: ScopeId;
   onBehalfOf?: string;
   editRef?: string;
+  stream?: { channel: string; ts: string; unfinished: true };
+  pendingApprovals?: PendingApproval[];
   taskList?: Array<{
     id: string;
     title: string;

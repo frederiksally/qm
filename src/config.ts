@@ -1,4 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
+import { providerBaseUrlsFromEnv, type ProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { join, resolve } from "node:path";
 import {
   parseMemoryCaptureMode,
@@ -50,6 +51,7 @@ export interface Config {
   openaiApiKey?: string;
   openrouterApiKey?: string;
   modelProvider?: ModelProvider;
+  providerBaseUrls: ProviderBaseUrls;
   piCaptureRequests: boolean;
   piSystemCacheSplit: boolean;
   sessionTapeMode: "shadow" | "serve";
@@ -113,6 +115,14 @@ export interface Config {
   memoryConsolidateAfter?: number;
   memoryCaptureQuietMs: number;
   memoryCaptureMaxTurns?: number;
+  brainMcpUrl?: string;
+  brainRoClientId?: string;
+  brainRoClientSecret?: string;
+  brainQueryTool?: string;
+  brainPageTool?: string;
+  brainRecentTool?: string;
+  brainAuth?: "oauth-client-credentials" | "bearer";
+  brainBearerToken?: string;
   workers: number;
   leaseTtlMs: number;
   heartbeatIntervalMs: number;
@@ -375,6 +385,10 @@ export function orgId(): string {
   return process.env.ORG_ID ?? DEFAULT_ORG_ID;
 }
 
+export function runtimeInstanceId(): string {
+  return process.env.FLY_ALLOC_ID?.trim() || process.env.HOSTNAME?.trim() || `pid:${process.pid}`;
+}
+
 export function orgScope(): string {
   return `org:${orgId()}`;
 }
@@ -555,6 +569,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (missingSecrets.length) {
     throw new Error(`missing or insecure required core secrets: ${missingSecrets.join(", ")}`);
   }
+  const brainConfigured = Boolean(
+    env.BRAIN_MCP_URL ||
+      env.BRAIN_AUTH ||
+      env.BRAIN_BEARER_TOKEN ||
+      env.BRAIN_RO_CLIENT_ID ||
+      env.BRAIN_RO_CLIENT_SECRET ||
+      env.BRAIN_QUERY_TOOL ||
+      env.BRAIN_PAGE_TOOL ||
+      env.BRAIN_RECENT_TOOL,
+  );
+  if (brainConfigured) {
+    if (!env.BRAIN_MCP_URL) throw new Error("BRAIN_MCP_URL is required when wiki reads are configured");
+    if (env.BRAIN_AUTH && env.BRAIN_AUTH !== "bearer" && env.BRAIN_AUTH !== "oauth-client-credentials")
+      throw new Error("BRAIN_AUTH must be bearer or oauth-client-credentials");
+    const brainAuth = env.BRAIN_AUTH ?? (env.BRAIN_BEARER_TOKEN ? "bearer" : "oauth-client-credentials");
+    if (brainAuth === "bearer" && !env.BRAIN_BEARER_TOKEN)
+      throw new Error("BRAIN_BEARER_TOKEN is required when BRAIN_AUTH=bearer");
+    if (brainAuth === "oauth-client-credentials" && (!env.BRAIN_RO_CLIENT_ID || !env.BRAIN_RO_CLIENT_SECRET))
+      throw new Error(
+        "BRAIN_RO_CLIENT_ID and BRAIN_RO_CLIENT_SECRET are required when BRAIN_AUTH=oauth-client-credentials",
+      );
+  }
   const modelProvider = modelProviderEnvStrict(env);
   for (const key of ["SESSION_STORE", "RUN_STORE", "ARTIFACT_STORE"] as const) {
     if (env[key] === "sqlite") {
@@ -636,6 +672,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const deployProvider: "aws" | "docker" = env.DEPLOY_PROVIDER === "aws" ? "aws" : "docker";
   let runStore: "memory" | "postgres" = env.SESSION_STORE === "postgres" ? "postgres" : "memory";
   if (env.RUN_STORE === "memory" || env.RUN_STORE === "postgres") runStore = env.RUN_STORE;
+  const providerBaseUrls = providerBaseUrlsFromEnv(env);
   const codexProcessEnv = Object.fromEntries(
     [
       "PATH",
@@ -650,7 +687,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "NO_PROXY",
       "ALL_PROXY",
       "OPENAI_API_KEY",
-      "OPENAI_BASE_URL",
       "CODEX_ACCESS_TOKEN",
       "HOME",
       "CODEX_HOME",
@@ -671,10 +707,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "ALL_PROXY",
       "ANTHROPIC_API_KEY",
       "ANTHROPIC_AUTH_TOKEN",
-      "ANTHROPIC_BASE_URL",
       "CLAUDE_CODE_OAUTH_TOKEN",
     ].flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]])),
   ) as NodeJS.ProcessEnv;
+  if (providerBaseUrls.openai) codexProcessEnv.OPENAI_BASE_URL = providerBaseUrls.openai;
+  if (providerBaseUrls.anthropic) claudeProcessEnv.ANTHROPIC_BASE_URL = providerBaseUrls.anthropic;
   const turnWallClockMs =
     (numEnvStrict("TURN_WALL_CLOCK_SEC", env.TURN_WALL_CLOCK_SEC) ?? CONFIG_DEFAULTS.turnWallClockSec) * 1000;
   const runMaxAgeMs =
@@ -728,6 +765,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.OPENAI_API_KEY ? { openaiApiKey: env.OPENAI_API_KEY } : {}),
     ...(env.OPENROUTER_API_KEY ? { openrouterApiKey: env.OPENROUTER_API_KEY } : {}),
     ...(modelProvider ? { modelProvider } : {}),
+    providerBaseUrls,
     ...(env.ADMIN_GRANTS ? { adminGrants: env.ADMIN_GRANTS } : {}),
     piCaptureRequests: boolEnvStrict("PI_CAPTURE_REQUESTS", env.PI_CAPTURE_REQUESTS) ?? true,
     piSystemCacheSplit: boolEnvStrict("PI_SYSTEM_CACHE_SPLIT", env.PI_SYSTEM_CACHE_SPLIT) ?? false,
@@ -806,6 +844,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(numEnvStrict("MEMORY_CAPTURE_MAX_TURNS", env.MEMORY_CAPTURE_MAX_TURNS) !== undefined
       ? { memoryCaptureMaxTurns: numEnvStrict("MEMORY_CAPTURE_MAX_TURNS", env.MEMORY_CAPTURE_MAX_TURNS) }
       : {}),
+    ...(env.BRAIN_MCP_URL ? { brainMcpUrl: env.BRAIN_MCP_URL } : {}),
+    ...(env.BRAIN_RO_CLIENT_ID ? { brainRoClientId: env.BRAIN_RO_CLIENT_ID } : {}),
+    ...(env.BRAIN_RO_CLIENT_SECRET ? { brainRoClientSecret: env.BRAIN_RO_CLIENT_SECRET } : {}),
+    ...(env.BRAIN_QUERY_TOOL ? { brainQueryTool: env.BRAIN_QUERY_TOOL } : {}),
+    ...(env.BRAIN_PAGE_TOOL ? { brainPageTool: env.BRAIN_PAGE_TOOL } : {}),
+    ...(env.BRAIN_RECENT_TOOL ? { brainRecentTool: env.BRAIN_RECENT_TOOL } : {}),
+    ...(env.BRAIN_AUTH === "oauth-client-credentials" || env.BRAIN_AUTH === "bearer"
+      ? { brainAuth: env.BRAIN_AUTH }
+      : {}),
+    ...(env.BRAIN_BEARER_TOKEN ? { brainBearerToken: env.BRAIN_BEARER_TOKEN } : {}),
     snapshotStore: env.SNAPSHOT_STORE === "s3" ? "s3" : "local",
     transferStore: env.TRANSFER_STORE === "s3" ? "s3" : "local",
     ...(env.S3_BUCKET ? { s3Bucket: env.S3_BUCKET } : {}),

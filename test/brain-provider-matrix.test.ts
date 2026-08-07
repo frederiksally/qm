@@ -1,0 +1,290 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  createBrainQueryService,
+  hasBrainQueryCredentials,
+  type BrainQueryOptions,
+} from "../src/memory/brain-query-service.ts";
+import type { BrainFetch } from "../src/memory/brain-mcp.ts";
+import { loadConfig } from "../src/config.ts";
+import { createAuditLog } from "../src/audit/audit-log.ts";
+
+const MCP_URL = "https://brain.provider.test";
+const BEARER_TOKEN = "static-bearer-tok";
+
+interface ServerShape {
+  framing: "sse" | "json";
+  auth: "oauth" | "bearer";
+  tool: string;
+}
+
+interface ServerCall {
+  kind: "token" | "mcp";
+  tool?: string;
+  authorization?: string;
+  args?: Record<string, unknown>;
+}
+
+function fakeServer(shape: ServerShape, opts: { seed?: string[]; failQuery?: boolean } = {}) {
+  const calls: ServerCall[] = [];
+  const facts = opts.seed ?? ["The deploy runbook lives at ops/deploy.md", "On-call rotates weekly"];
+  let mints = 0;
+
+  const frame = (envelope: unknown, reqId: unknown) => {
+    if (shape.framing === "json") {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (n: string) => (n.toLowerCase() === "content-type" ? "application/json" : null) },
+        async text() {
+          return JSON.stringify({ jsonrpc: "2.0", id: reqId, ...(envelope as object) });
+        },
+      };
+    }
+    const sse =
+      `event: message\n` +
+      `data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: {} })}\n\n` +
+      `event: message\n` +
+      `data: ${JSON.stringify({ jsonrpc: "2.0", id: reqId, ...(envelope as object) })}\n\n`;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (n: string) => (n.toLowerCase() === "content-type" ? "text/event-stream" : null) },
+      async text() {
+        return sse;
+      },
+    };
+  };
+
+  const fetchImpl: BrainFetch = async (url, init) => {
+    if (url.endsWith("/token")) {
+      calls.push({ kind: "token" });
+      if (shape.auth === "bearer")
+        return {
+          ok: false,
+          status: 404,
+          async text() {
+            return "no token endpoint";
+          },
+        };
+      mints++;
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ access_token: `minted-${mints}`, expires_in: 3600 });
+        },
+      };
+    }
+    const authorization = init.headers.authorization ?? "";
+    const body = JSON.parse(init.body) as {
+      id: unknown;
+      params: { name: string; arguments?: Record<string, unknown> };
+    };
+    const name = body.params.name;
+    const args = body.params.arguments ?? {};
+    calls.push({ kind: "mcp", tool: name, authorization, args });
+    const expected = shape.auth === "bearer" ? `Bearer ${BEARER_TOKEN}` : `Bearer minted-${mints}`;
+    if (authorization !== expected) return frame({ error: { message: "unauthorized" } }, body.id);
+    if (name === "whoami") {
+      return frame(
+        { result: { structuredContent: { source_id: "personal-u1", federated_read: ["personal-u1", "shared"] } } },
+        body.id,
+      );
+    }
+    if (name !== shape.tool) return frame({ error: { message: `unknown tool ${name}` } }, body.id);
+    if (opts.failQuery) return frame({ error: { message: "backend unavailable" } }, body.id);
+    const q = String(args.query ?? "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    const hits = facts.filter((f) => q.every((t) => f.toLowerCase().includes(t)));
+    return frame({ result: { content: [{ type: "text", text: hits.join("\n") }] } }, body.id);
+  };
+
+  return {
+    fetchImpl,
+    calls,
+    get mints() {
+      return mints;
+    },
+  };
+}
+
+interface Provider {
+  name: string;
+  shape: ServerShape;
+  queryOpts(fetchImpl: BrainFetch): BrainQueryOptions;
+}
+
+const PROVIDERS: Provider[] = [
+  {
+    name: "graph-brain-shaped (oauth client credentials, SSE framing, `query` tool)",
+    shape: { framing: "sse", auth: "oauth", tool: "query" },
+    queryOpts: (fetchImpl) => ({
+      mcpUrl: MCP_URL,
+      clientId: "ro-reader",
+      clientSecret: "ro-s3cr3t",
+      queryTool: "query",
+      fetchImpl,
+    }),
+  },
+  {
+    name: "glean-shaped (static bearer token, plain JSON framing, `search` tool)",
+    shape: { framing: "json", auth: "bearer", tool: "search" },
+    queryOpts: (fetchImpl) => ({
+      mcpUrl: MCP_URL,
+      auth: "bearer",
+      bearerToken: BEARER_TOKEN,
+      queryTool: "search",
+      fetchImpl,
+    }),
+  },
+];
+
+for (const provider of PROVIDERS) {
+  test(`${provider.name}: query returns fact lines through the shared query-service path`, async () => {
+    const fake = fakeServer(provider.shape);
+    const brain = createBrainQueryService(provider.queryOpts(fake.fetchImpl));
+    assert.deepEqual(await brain.query("deploy runbook"), {
+      ok: true,
+      lines: ["The deploy runbook lives at ops/deploy.md"],
+    });
+    const call = fake.calls.find((c) => c.kind === "mcp" && c.tool === provider.shape.tool);
+    assert.ok(call, `the ${provider.shape.tool} tool was called`);
+  });
+
+  test(`${provider.name}: a server-side error fails open to [] and lands in the audit log`, async () => {
+    const fake = fakeServer(provider.shape, { failQuery: true });
+    const audit = createAuditLog();
+    const brain = createBrainQueryService({ ...provider.queryOpts(fake.fetchImpl), audit });
+    assert.deepEqual(await brain.query("deploy", undefined, "U1"), { ok: false });
+    const events = await audit.events();
+    const ev = events.find((e) => e.action === `brain.${provider.shape.tool}`);
+    assert.ok(ev, "an audit row was recorded for the failed query");
+    assert.ok(ev?.status?.startsWith("error:"), `status carries the error, got: ${ev?.status}`);
+    assert.equal(ev?.scopeLabel, "team-brain");
+  });
+
+  test(`${provider.name}: an empty query never touches the network`, async () => {
+    const fake = fakeServer(provider.shape);
+    const brain = createBrainQueryService(provider.queryOpts(fake.fetchImpl));
+    assert.deepEqual(await brain.query("   "), { ok: false });
+    assert.equal(fake.calls.length, 0);
+  });
+}
+
+test("bearer auth sends the static token and NEVER hits a token-mint endpoint", async () => {
+  const fake = fakeServer({ framing: "json", auth: "bearer", tool: "search" });
+  const brain = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: BEARER_TOKEN,
+    queryTool: "search",
+    fetchImpl: fake.fetchImpl,
+  });
+  await brain.query("deploy");
+  await brain.query("rotates");
+  assert.equal(fake.calls.filter((c) => c.kind === "token").length, 0, "no token-mint request was made");
+  for (const c of fake.calls) {
+    assert.equal(c.authorization, `Bearer ${BEARER_TOKEN}`, "every request carries the static bearer token");
+  }
+});
+
+test("oauth auth mints once, caches, and sends the minted token", async () => {
+  const fake = fakeServer({ framing: "sse", auth: "oauth", tool: "query" });
+  const brain = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    clientId: "ro-reader",
+    clientSecret: "ro-s3cr3t",
+    fetchImpl: fake.fetchImpl,
+  });
+  await brain.query("deploy");
+  await brain.query("rotates");
+  assert.equal(fake.mints, 1, "token minted once and cached across queries");
+  const mcpCalls = fake.calls.filter((c) => c.kind === "mcp");
+  assert.ok(mcpCalls.every((c) => c.authorization === "Bearer minted-1"));
+});
+
+test("explicit auth rejects credentials for the other auth mode", () => {
+  assert.equal(
+    hasBrainQueryCredentials({ auth: "oauth-client-credentials", bearerToken: BEARER_TOKEN }),
+    false,
+  );
+  assert.equal(
+    hasBrainQueryCredentials({ auth: "bearer", clientId: "ro-reader", clientSecret: "secret" }),
+    false,
+  );
+});
+
+test("a stalled wiki request fails within its configured deadline", async () => {
+  const brain = createBrainQueryService({
+    auth: "bearer",
+    bearerToken: BEARER_TOKEN,
+    fetchImpl: () => new Promise(() => {}),
+    mcpUrl: MCP_URL,
+    requestTimeoutMs: 5,
+  });
+  assert.deepEqual(await brain.query("deploy"), { ok: false });
+});
+
+test("a stalled wiki response body fails within its configured deadline", async () => {
+  const brain = createBrainQueryService({
+    auth: "bearer",
+    bearerToken: BEARER_TOKEN,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: () => new Promise(() => {}),
+    }),
+    mcpUrl: MCP_URL,
+    requestTimeoutMs: 5,
+  });
+  assert.deepEqual(await brain.query("deploy"), { ok: false });
+});
+
+test("brain page and recent tool names are read from env when set", () => {
+  const cfg = loadConfig({
+    BRAIN_MCP_URL: "https://brain.example.test/mcp",
+    BRAIN_AUTH: "bearer",
+    BRAIN_BEARER_TOKEN: "tok",
+    BRAIN_QUERY_TOOL: "wiki_search",
+    BRAIN_PAGE_TOOL: "wiki_page",
+    BRAIN_RECENT_TOOL: "wiki_recent",
+  });
+  assert.equal(cfg.brainPageTool, "wiki_page");
+  assert.equal(cfg.brainRecentTool, "wiki_recent");
+});
+
+test("brain page and recent tool names stay undefined when unset", () => {
+  const cfg = loadConfig({
+    BRAIN_MCP_URL: "https://brain.example.test/mcp",
+    BRAIN_AUTH: "bearer",
+    BRAIN_BEARER_TOKEN: "tok",
+  });
+  assert.equal(cfg.brainPageTool, undefined);
+  assert.equal(cfg.brainRecentTool, undefined);
+});
+
+test("config rejects wiki credentials that do not satisfy the selected auth mode", () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        BRAIN_AUTH: "oauth-client-credentials",
+        BRAIN_BEARER_TOKEN: "tok",
+        BRAIN_MCP_URL: MCP_URL,
+      }),
+    /BRAIN_RO_CLIENT_ID and BRAIN_RO_CLIENT_SECRET/,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        BRAIN_AUTH: "bearer",
+        BRAIN_MCP_URL: MCP_URL,
+        BRAIN_RO_CLIENT_ID: "ro",
+        BRAIN_RO_CLIENT_SECRET: "secret",
+      }),
+    /BRAIN_BEARER_TOKEN/,
+  );
+  assert.throws(() => loadConfig({ BRAIN_PAGE_TOOL: "wiki_page" }), /BRAIN_MCP_URL/);
+});

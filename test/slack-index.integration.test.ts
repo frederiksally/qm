@@ -18,6 +18,10 @@ class FakeSlackClient {
   readonly deletes: any[] = [];
   readonly reactionsAdded: any[] = [];
   readonly reactionsRemoved: any[] = [];
+  readonly statuses: any[] = [];
+  readonly titles: any[] = [];
+  readonly streamAppends: any[] = [];
+  readonly streamStops: any[] = [];
   readonly usersById = new Map<string, any>();
   readonly channelsById = new Map<string, any>();
   readonly membersByChannel = new Map<string, string[]>();
@@ -88,6 +92,22 @@ class FakeSlackClient {
       return { ok: true };
     },
   };
+  chatStream(args: any): any {
+    let ts: string | undefined;
+    return {
+      get ts() {
+        return ts;
+      },
+      append: async (body: any) => {
+        ts ??= `stream-${++this.postSequence}`;
+        this.streamAppends.push({ args, body, ts });
+      },
+      stop: async (body: any) => {
+        ts ??= `stream-${++this.postSequence}`;
+        this.streamStops.push({ args, body, ts });
+      },
+    };
+  }
   readonly reactions = {
     add: async (body: any) => {
       this.reactionsAdded.push(body);
@@ -104,6 +124,18 @@ class FakeSlackClient {
     info: async () => ({ file: {} }),
   };
   readonly bots = { info: async () => ({ bot: {} }) };
+  readonly assistant = {
+    threads: {
+      setStatus: async (body: any) => {
+        this.statuses.push(body);
+        return { ok: true };
+      },
+      setTitle: async (body: any) => {
+        this.titles.push(body);
+        return { ok: true };
+      },
+    },
+  };
 
   async *paginate(method: string, args: any): AsyncGenerator<any> {
     if (method === "users.list") {
@@ -193,9 +225,12 @@ class FakeCore implements SlackCoreClient {
   submitError: Error | undefined;
   activeRun: string | undefined;
   abortedRuns: string[] = [];
+  ackedRuns: string[] = [];
   queuedRunId: string | undefined;
   private heldRunClaimed = false;
   readonly polled: string[] = [];
+  readonly editRefs: Array<{ runId: string; editRef: string }> = [];
+  private runHooks: any;
   private runGate: Promise<void> | undefined;
   private releaseRun: (() => void) | undefined;
   readonly modelChangeListeners: Array<(scope: any) => void> = [];
@@ -223,6 +258,7 @@ class FakeCore implements SlackCoreClient {
     return undefined;
   }
   async recordAckPick(): Promise<void> {}
+  async recordFeedback(): Promise<void> {}
   async ingestSurfaceEvents(events: any[]): Promise<void> {
     this.ingests.push(events);
   }
@@ -238,10 +274,14 @@ class FakeCore implements SlackCoreClient {
     }
     return this.result;
   }
-  async waitRun(runId: string): Promise<TurnResult | null> {
+  async waitRun(runId: string, hooks?: any): Promise<TurnResult | null> {
     this.polled.push(runId);
+    this.runHooks = hooks;
     if (this.runGate) await this.runGate;
     return this.result;
+  }
+  emitDelta(delta: string): void {
+    this.runHooks?.onDelta?.(delta);
   }
   /** Enqueue `runId` on the first submit and hold waitRun open; every later submit is a
    *  mid-turn STEER answered with that same live run's id. `finishRun` releases the waiters. */
@@ -260,9 +300,16 @@ class FakeCore implements SlackCoreClient {
   async signalRunAbort(runId: string): Promise<void> {
     this.abortedRuns.push(runId);
   }
-  async ackRunDelivery(): Promise<void> {}
+  async ackRunDelivery(runId: string): Promise<void> {
+    this.ackedRuns.push(runId);
+  }
   async reportTurnMetrics(): Promise<void> {}
-  async reportRunEditRef(): Promise<void> {}
+  async reportRunEditRef(runId: string, editRef: string): Promise<void> {
+    this.editRefs.push({ runId, editRef });
+  }
+  async reportRunDeliveryState(runId: string, state: any): Promise<void> {
+    this.editRefs.push({ runId, editRef: state.editRef ?? state.surface?.ts });
+  }
   async getApproval(): Promise<null> {
     return null;
   }
@@ -396,6 +443,108 @@ test("a DM becomes one scoped live turn and one Slack reply", async () => {
       f.client.posts.map((p) => p.text),
       ["agent reply"],
     );
+    assert.equal(f.client.posts.find((p) => p.text === "agent reply")?.thread_ts, "100.1");
+    assert.deepEqual(f.client.titles, [
+      { channel_id: "D1", thread_ts: "100.1", title: "hello agent" },
+    ]);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("DM thread replies preserve channel-scoped session and delivery identity", async () => {
+  const f = await fixture();
+  try {
+    await f.app.emitMessage({
+      channel: "D1",
+      channel_type: "im",
+      user: "U1",
+      text: "follow up",
+      ts: "100.2",
+      thread_ts: "100.1",
+    });
+    assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1");
+    assert.equal(f.core.turns[0].deliveryTarget, "D1");
+    assert.equal(f.client.posts.find((p) => p.text === "agent reply")?.thread_ts, "100.1");
+    assert.deepEqual(f.client.titles, []);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a long DM turn uses native status and clears it on completion", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "work", ts: "100.3" });
+    await waitFor(() => f.core.polled.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    assert.deepEqual(f.client.statuses, [
+      { channel_id: "D1", thread_ts: "100.3", status: "Thinking…" },
+    ]);
+    f.core.finishRun({ status: "ok", reply: "done" });
+    await turn;
+    assert.deepEqual(f.client.statuses.at(-1), { channel_id: "D1", thread_ts: "100.3", status: "" });
+    assert.deepEqual(f.client.reactionsAdded, []);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a queued DM streams once, checkpoints, and finalizes the same message", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "stream", ts: "100.4" });
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.emitDelta("**short** <@U2> answer");
+    await waitFor(() => f.client.streamAppends.length === 1);
+    assert.equal(f.client.streamAppends[0]?.body.markdown_text, "**short** &lt;@U2&gt; answer");
+    f.core.finishRun({ status: "ok", reply: "**short** <@U2> answer" });
+    await turn;
+    assert.deepEqual(f.core.editRefs, [{ runId: "R1", editRef: "stream-1" }]);
+    assert.equal(f.client.streamStops.length, 1);
+    assert.equal(f.client.posts.filter((post) => post.text.includes("short")).length, 0);
+    assert.equal(f.client.updates.filter((update) => update.text === "*short* <@U2> answer").length, 1);
+    assert.deepEqual(f.core.ackedRuns, ["R1"]);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a queued DM with no deltas posts feedback and only then acknowledges recovery", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "cached", ts: "100.5" });
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.finishRun({ status: "ok", reply: "cached answer" });
+    await turn;
+    const reply = f.client.posts.find((post) => post.text === "cached answer");
+    assert.ok(reply?.blocks?.some((block: any) => block.type === "context_actions"));
+    assert.deepEqual(f.core.ackedRuns, ["R1"]);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a late DM approval reconciles its opened stream with buttons and no second post", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "run it", ts: "100.6" });
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.emitDelta("I need to check this.");
+    await waitFor(() => f.client.streamAppends.length === 1);
+    f.core.finishRun({
+      status: "pending_approval",
+      pendingApprovals: [{ requestId: "A1", command: "deploy", reason: "approval required" }],
+    });
+    await turn;
+    assert.equal(f.client.posts.filter((post) => String(post.text).includes("Approval needed")).length, 0);
+    const update = f.client.updates.find((item) => String(item.text).includes("Approval needed"));
+    assert.ok(update?.blocks?.some((block: any) => block.type === "actions"));
+    assert.deepEqual(f.core.ackedRuns, ["R1"]);
   } finally {
     await f.stop();
   }
@@ -529,6 +678,7 @@ test("an external principal is refused in a DM before core sees the text", async
     assert.equal(f.core.turns.length, 0);
     assert.equal(f.client.posts.length, 1);
     assert.match(f.client.posts[0].text, /isn't fully internal/);
+    assert.deepEqual(f.client.statuses, []);
     assert.equal(
       f.core.ingests.flat().some((event) => event.text === "exfiltrate this"),
       false,

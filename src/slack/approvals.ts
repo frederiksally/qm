@@ -20,6 +20,7 @@ import {
   recoveredApprovalContext,
   resolveReactionTargets,
   slackReplyArgs,
+  setThreadTitle,
   stripAckPrefix,
   toSlackMrkdwn,
   uploadAttachments,
@@ -168,10 +169,11 @@ export function createApprovals(deps: {
     const { approvalChannel, toDm, channelPointer } = await resolveApprovalCardChannel(client, ctx);
     rememberSlackApprovals(approvals, { ...ctx, approvalChannel });
     const msg = approvalMessage(approvals);
-    await client.chat.postMessage({
+    const posted = await client.chat.postMessage({
       ...slackReplyArgs(approvalChannel, msg.text, toDm ? undefined : ctx.replyThreadTs, { threadOnly: !toDm }),
       blocks: msg.blocks,
     });
+    if (toDm && posted?.ts) await setThreadTitle(client, approvalChannel, String(posted.ts), msg.text);
     if (toDm && channelPointer) {
       await client.chat
         .postMessage(slackReplyArgs(ctx.channel, channelPointer, ctx.replyThreadTs, { threadOnly: true }))
@@ -303,7 +305,11 @@ export function createApprovals(deps: {
     if (opts.approvalMessageTs) {
       await updateSlackMessage(client, ctx.dmChannel, opts.approvalMessageTs, msg.text, msg.blocks);
     } else {
-      await client.chat.postMessage({ ...slackReplyArgs(ctx.dmChannel, msg.text, undefined), blocks: msg.blocks });
+      const posted = await client.chat.postMessage({
+        ...slackReplyArgs(ctx.dmChannel, msg.text, undefined),
+        blocks: msg.blocks,
+      });
+      if (posted?.ts) await setThreadTitle(client, ctx.dmChannel, String(posted.ts), msg.text);
     }
     await tryUpdateSlackMessage(
       client,
@@ -446,7 +452,10 @@ export function createApprovals(deps: {
           ...botIdentityArgs(),
           blocks: prompt.blocks,
         });
-        if (dm?.ts) pendingCtx.dmMessageTs = String(dm.ts);
+        if (dm?.ts) {
+          pendingCtx.dmMessageTs = String(dm.ts);
+          await setThreadTitle(client, dmChannel, String(dm.ts), prompt.text);
+        }
         pendingSlackAgentRequests.set(requestId, pendingCtx);
       } catch (err) {
         const reason = `Slack couldn't send the personal-agent request to ${target.displayName ?? req.targetUserId}: ${(err as Error).message}`;

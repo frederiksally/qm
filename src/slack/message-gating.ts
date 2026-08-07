@@ -100,8 +100,8 @@ export function createThreadTracker(opts: { negativeTtlMs?: number } = {}): Thre
   };
 }
 
-export function dmThreadRef(channel: string, threadTs?: string): string {
-  return threadTs ? `dm:${channel}:${threadTs}` : `dm:${channel}`;
+export function dmThreadRef(channel: string): string {
+  return `dm:${channel}`;
 }
 
 export function dedupeKey(e: { event_id?: string; client_msg_id?: string; channel?: string; ts?: string }): string {

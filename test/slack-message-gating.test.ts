@@ -83,11 +83,8 @@ test("hasContent is true with text OR with files, false when truly empty (scenar
   assert.equal(hasContent("   ", []), false);
 });
 
-test("dmThreadRef gives the DM main pane one continuous lane and each thread its own", () => {
+test("dmThreadRef gives every thread in a DM one continuous session", () => {
   assert.equal(dmThreadRef("D1"), "dm:D1");
-  assert.equal(dmThreadRef("D1", "1699999999.000100"), "dm:D1:1699999999.000100");
-  assert.notEqual(dmThreadRef("D1", "1699999999.000100"), dmThreadRef("D1", "1700000000.000200"));
-  assert.notEqual(dmThreadRef("D1", "1699999999.000100"), dmThreadRef("D1"));
 });
 
 test("mentionsBot detects the bot @mention so thread-follow leaves those to app_mention", () => {

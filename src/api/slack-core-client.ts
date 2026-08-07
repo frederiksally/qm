@@ -14,23 +14,29 @@ import type {
 import { scopeId } from "../types.ts";
 import type { IngestEvent } from "../surface-cache/surface-cache.ts";
 import type { AckEmojiPickStore } from "../surface-cache/ack-emoji-pick-store.ts";
+import type { FeedbackOutcome, FeedbackStore } from "../surface-cache/feedback-store.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import type { BlobTransferStore } from "../persistence/blob-transfer.ts";
 import { MAX_BLOB_BYTES } from "../persistence/blob-transfer.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import type { MetricsSink } from "../admin/metrics-sink.ts";
-import type { RunStore } from "../runs/run-store.ts";
+import type { RunDeliveryState, RunStore } from "../runs/run-store.ts";
 import { isTerminal } from "../runs/run-store.ts";
 import type { TurnStream } from "../runs/turn-stream.ts";
+import type { RunActivityStore } from "../runs/run-activity-store.ts";
+import { projectActivitySteps, type SlackActivityStep } from "../slack/activity-steps.ts";
 import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import { swallowAs } from "../util/errors.ts";
+import { runtimeInstanceId } from "../config.ts";
 import { resolveRuntimeChoiceDurable, type RuntimeChoice } from "../harness/harness-router.ts";
 import { modelDisplayName } from "../model/pi-models.ts";
 
 interface SlackRunHooks {
+  onDelta?(delta: string): void;
   onFirstBlock?(text: string): void;
   onSurfacePosted?(): void;
   onTasks?(tasks: Array<{ id: string; title: string; status: TaskStatus }>): void | Promise<void>;
+  onActivity?(steps: SlackActivityStep[]): void | Promise<void>;
 }
 
 interface StoredApprovalView {
@@ -66,8 +72,17 @@ export interface SlackCoreClient {
   activeRunForThread(threadRef: string): Promise<string | undefined>;
   signalRunAbort(runId: string): Promise<void>;
   ackRunDelivery(runId: string): Promise<void>;
-  reportTurnMetrics(runId: string, patch: { deliverMs?: number; slackInflightMs?: number }): Promise<void>;
+  reportTurnMetrics(
+    runId: string,
+    patch: {
+      deliverMs?: number;
+      slackInflightMs?: number;
+      slackStreamReceived?: number;
+      slackStreamReceivedInstance?: string;
+    },
+  ): Promise<void>;
   reportRunEditRef(runId: string, editRef: string): Promise<void>;
+  reportRunDeliveryState(runId: string, state: RunDeliveryState): Promise<void>;
   getApproval(requestId: string): Promise<StoredApprovalView | null>;
   pushDirectory(body: DirectoryPush): Promise<void>;
   claimDeliveries(type: string, claimMs: number): Promise<Delivery[]>;
@@ -78,6 +93,14 @@ export interface SlackCoreClient {
   fulfillContextRequest(id: string, outcome: { result?: SurfaceContextResult; error?: string }): Promise<void>;
   pickAckEmoji(text: string, candidates: readonly string[]): Promise<string | undefined>;
   recordAckPick(pick: AckPickInput): Promise<void>;
+  recordFeedback(input: {
+    teamId: string;
+    actorId: string;
+    channel: string;
+    messageTs: string;
+    runId: string;
+    outcome: FeedbackOutcome;
+  }): Promise<void>;
 }
 
 type AckPickInput = {
@@ -102,9 +125,11 @@ export interface SlackCoreClientDeps {
   metrics: MetricsSink;
   runs: RunStore;
   turnStream: TurnStream;
+  runActivity: RunActivityStore;
   tasks: TaskStore;
   pickAckEmoji?(text: string, candidates: readonly string[]): Promise<string | undefined>;
   ackPicks?: AckEmojiPickStore;
+  feedback?: FeedbackStore;
   ackModelId?: () => string | undefined;
   brandingDefault?: { selfLabel?: string };
 }
@@ -186,13 +211,22 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
       };
       const waiters = terminalWaiters.get(runId) ?? new Set();
       terminalWaiters.set(runId, waiters);
+      let receivedDeltas = 0;
       const unsubscribe = deps.turnStream.subscribe(runId, {
+        onDelta: (delta) => {
+          if (!hooks.onDelta) return;
+          receivedDeltas++;
+          hooks.onDelta(delta);
+        },
         onFirstBlock: signalFirstBlock,
         onSurfacePosted: signalSurface,
       });
       let lastProgressAt = Date.now();
       let lastMark = "";
       let taskSnapshot = "";
+      let activityCursor: string | undefined;
+      let activitySteps: SlackActivityStep[] = [];
+      let activitySnapshot = "";
       const emitTasks = async (): Promise<void> => {
         if (!hooks.onTasks) return;
         const tasks = (await deps.tasks.list({ originRunId: runId })).map(({ id, title, status }) => ({
@@ -205,6 +239,24 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
         if (next === taskSnapshot) return;
         taskSnapshot = next;
         await hooks.onTasks(tasks);
+      };
+      const emitActivity = async (): Promise<void> => {
+        if (!hooks.onActivity) return;
+        for (;;) {
+          const page = await deps.runActivity.read(runId, activityCursor, 200);
+          if (page.gap) {
+            activitySteps = [];
+            console.error(`[slack-core-client] run activity cursor gap run=${runId}`);
+          }
+          activityCursor = page.cursor ?? activityCursor;
+          activitySteps = projectActivitySteps(page.entries, activitySteps);
+          if (page.entries.length < 200) break;
+        }
+        if (!activitySteps.length) return;
+        const next = JSON.stringify(activitySteps);
+        if (next === activitySnapshot) return;
+        activitySnapshot = next;
+        await hooks.onActivity(activitySteps);
       };
       try {
         for (;;) {
@@ -219,12 +271,21 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
             if (!run) throw new Error(`run ${runId} not found`);
             if (deps.turnStream.surfacePosted(runId)) signalSurface();
             if (isTerminal(run.status)) {
+              await emitActivity().catch(swallowAs("slack-core-client: terminal activity refresh", undefined));
+              if (hooks.onDelta)
+                await deps.metrics
+                  .updateByRunId(runId, {
+                    slackStreamReceived: receivedDeltas,
+                    slackStreamReceivedInstance: runtimeInstanceId(),
+                  })
+                  .catch(swallowAs("slack-core-client: stream receipt metric", undefined));
               const view = await deps.app.getRun(runId);
               await emitTasks().catch(swallowAs("slack-core-client: terminal task refresh", undefined));
               if (view?.surfacePosted) signalSurface();
               return (view?.result as TurnResult | null | undefined) ?? null;
             }
             await emitTasks();
+            await emitActivity().catch(swallowAs("slack-core-client: activity refresh", undefined));
             const fb = deps.turnStream.firstBlock(runId);
             if (fb?.closed) signalFirstBlock(fb.text);
             const mark = `${run.status}:${run.attempts}:${run.leaseExpiresAt ?? ""}`;
@@ -274,6 +335,11 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
 
     async reportRunEditRef(runId, editRef) {
       const found = await deps.app.setRunDeliveryState(runId, { editRef });
+      if (!found) throw new Error(`run ${runId} not found`);
+    },
+
+    async reportRunDeliveryState(runId, state) {
+      const found = await deps.app.setRunDeliveryState(runId, state);
       if (!found) throw new Error(`run ${runId} not found`);
     },
 
@@ -342,6 +408,15 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
           createdAt: Date.now(),
         })
         .catch(() => {});
+    },
+
+    async recordFeedback(input) {
+      if (!deps.feedback) return;
+      const run = await deps.runs.get(input.runId);
+      const surface = run?.deliveryState?.surface;
+      if (!run || surface?.ts !== input.messageTs || (surface.channel && surface.channel !== input.channel))
+        throw new Error("feedback message does not match run delivery");
+      await deps.feedback.record({ ...input, createdAt: Date.now() });
     },
 
     async fulfillContextRequest(id, outcome) {

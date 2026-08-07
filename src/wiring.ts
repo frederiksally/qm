@@ -87,6 +87,11 @@ import { createLocalWorkspaceStore, type WorkspaceStore } from "./workspace/work
 import { createMemoryService, type MemoryService } from "./memory/memory-service.ts";
 import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts";
 import {
+  createBrainQueryService,
+  hasBrainQueryCredentials,
+  type BrainQueryService,
+} from "./memory/brain-query-service.ts";
+import {
   createLocalBlobTransferStore,
   createS3BlobTransferStore,
   type BlobTransferStore,
@@ -158,6 +163,9 @@ import { createPostgresEgressAuditSink } from "./admin/postgres-egress-audit-sin
 import { createConsentLinkStore, type ConsentLinkStore, type ConsentLinkRecord } from "./connectors/consent-link.ts";
 import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts";
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
+import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
+import { setCustomProviders } from "./model/custom-providers.ts";
+import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
 import type { SessionStore } from "./sessions/session-store.ts";
@@ -232,6 +240,11 @@ import {
   createPostgresAckEmojiPickStore,
   type AckEmojiPickStore,
 } from "./surface-cache/ack-emoji-pick-store.ts";
+import {
+  createMemoryFeedbackStore,
+  createPostgresFeedbackStore,
+  type FeedbackStore,
+} from "./surface-cache/feedback-store.ts";
 import {
   auxiliaryModelFor,
   auxiliaryModelForProvider,
@@ -318,6 +331,8 @@ export interface BuiltApp {
   secretDrops: SecretDropStore;
   modelGateway: ModelGateway;
   modelCredentials: ModelCredentialStore;
+  customProviders: CustomProviderStore;
+  refreshCustomProviders: () => Promise<void>;
   acl: AclStore;
   skills: SkillStore;
   skillBundles: SkillBundleStore;
@@ -356,6 +371,7 @@ export interface BuiltApp {
   monitorPoller?: MonitorPoller;
   ambientJudgments?: AmbientJudgmentStore;
   ackEmojiPicks?: AckEmojiPickStore;
+  feedback?: FeedbackStore;
   channelPolicy: ChannelPolicyStore;
   skillSyncEngine: SkillSyncEngine;
   slackCore: SlackCoreClient;
@@ -394,6 +410,7 @@ export function buildApp(
   const pgArtifactMap = config.databaseUrl ? createPostgresMapFactory(config.databaseUrl) : null;
   const artifactMap = <T>(table: string): DurableMap<T> =>
     pgArtifactMap ? pgArtifactMap.map<T>(table) : createMemoryMap<T>();
+  setProviderBaseUrls(config.providerBaseUrls);
   const modelCredentials = createModelCredentialStore({
     backing: artifactMap("model_credentials"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
@@ -553,6 +570,26 @@ export function buildApp(
   const baseMemory: MemoryService = config.databaseUrl
     ? createPostgresMemoryService(config.databaseUrl)
     : createMemoryService(workspace);
+  const brainQuery: BrainQueryService | undefined =
+    config.brainMcpUrl &&
+    hasBrainQueryCredentials({
+      ...(config.brainAuth ? { auth: config.brainAuth } : {}),
+      ...(config.brainBearerToken ? { bearerToken: config.brainBearerToken } : {}),
+      ...(config.brainRoClientId ? { clientId: config.brainRoClientId } : {}),
+      ...(config.brainRoClientSecret ? { clientSecret: config.brainRoClientSecret } : {}),
+    })
+      ? createBrainQueryService({
+          mcpUrl: config.brainMcpUrl,
+          ...(config.brainAuth ? { auth: config.brainAuth } : {}),
+          ...(config.brainRoClientId ? { clientId: config.brainRoClientId } : {}),
+          ...(config.brainRoClientSecret ? { clientSecret: config.brainRoClientSecret } : {}),
+          ...(config.brainBearerToken ? { bearerToken: config.brainBearerToken } : {}),
+          ...(config.brainQueryTool ? { queryTool: config.brainQueryTool } : {}),
+          ...(config.brainPageTool ? { pageTool: config.brainPageTool } : {}),
+          ...(config.brainRecentTool ? { recentTool: config.brainRecentTool } : {}),
+          audit: auditLog,
+        })
+      : undefined;
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();
   const sandboxOnError = (e: { category: string; code: string; message: string; scopeLabel?: string }) =>
     errors.record({
@@ -681,16 +718,44 @@ export function buildApp(
       ? createPostgresRunSignalStore(requireDbUrl("RUN_STORE"))
       : createMemoryRunSignalStore();
   const tasks = config.databaseUrl ? createPostgresTaskStore(config.databaseUrl) : createMemoryTaskStore();
+  const customProviders = createCustomProviderStore({
+    backing: artifactMap("custom_model_providers"),
+    keyMaterial: config.connectorSecretKey ?? randomBytes(32),
+  });
+  const refreshCustomProviders = async () => {
+    setCustomProviders(await customProviders.enabled());
+  };
+  void refreshCustomProviders().catch((e) =>
+    console.error("[wiring] custom provider hydration failed:", errMessage(e)),
+  );
   const resolveModelProviderKeys = async () => {
-    const [anthropic, openai, openrouter] = await Promise.all([
+    const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
       modelCredentials.resolve("anthropic"),
       modelCredentials.resolve("openai"),
       modelCredentials.resolve("openrouter"),
+      customProviders.enabled(),
     ]);
+    const customKeys = Object.fromEntries(
+      (
+        await Promise.all(
+          enabledCustom.map(async (p) => {
+            try {
+              return [p.id, await customProviders.resolveKey(p.id)] as const;
+            } catch (e) {
+              // A corrupt/undecryptable custom key must degrade that one
+              // provider, never the whole turn (built-ins included).
+              console.error(`[model] custom provider ${p.id}: key unreadable: ${errMessage(e)}`);
+              return [p.id, null] as const;
+            }
+          }),
+        )
+      ).filter(([, key]) => key),
+    );
     return {
       ...(anthropic ? { anthropic } : {}),
       ...(openai ? { openai } : {}),
       ...(openrouter ? { openrouter } : {}),
+      ...customKeys,
     };
   };
   const runtimeOrgScope = scopeId("org", config.orgId);
@@ -706,7 +771,31 @@ export function buildApp(
         signals: runSignals,
       }),
     ],
-    ["opencode", createOpenCodeHarness({ ...openCodeHarnessConfigOptions(config), signals: runSignals, tasks })],
+    [
+      "opencode",
+      createOpenCodeHarness({
+        ...openCodeHarnessConfigOptions(config),
+        signals: runSignals,
+        tasks,
+        resolveCustomProviders: async () => {
+          const enabled = await customProviders.enabled();
+          return Promise.all(
+            enabled.map(async (spec) => {
+              try {
+                const apiKey = await customProviders.resolveKey(spec.id);
+                return { spec, ...(apiKey ? { apiKey } : {}) };
+              } catch (e) {
+                // An unreadable key must not prevent the opencode server from
+                // starting; the provider is configured keyless and its models
+                // fail individually instead.
+                console.error(`[model] custom provider ${spec.id}: key unreadable: ${errMessage(e)}`);
+                return { spec };
+              }
+            }),
+          );
+        },
+      }),
+    ],
     ["codex", createCodexHarness({ ...codexHarnessConfigOptions(config), signals: runSignals, tasks })],
     ["claude", createClaudeHarness({ ...claudeHarnessConfigOptions(config), signals: runSignals, tasks })],
     ["mock", createMockHarness()],
@@ -901,6 +990,7 @@ export function buildApp(
     deploy: deployService,
     acl,
     admin,
+    ...(brainQuery ? { brain: brainQuery } : {}),
     ...(config.maxContextEntries !== undefined ? { maxContextEntries: config.maxContextEntries } : {}),
     ...(config.maxContextTokens !== undefined ? { maxContextTokens: config.maxContextTokens } : {}),
     execTimeoutMs: config.execTimeoutDefaultMs,
@@ -1034,6 +1124,11 @@ export function buildApp(
   const ackEmojiPicks: AckEmojiPickStore = config.databaseUrl
     ? createPostgresAckEmojiPickStore(config.databaseUrl)
     : createMemoryAckEmojiPickStore();
+  if (!config.databaseUrl && config.production)
+    throw new Error("DATABASE_URL is required for durable Slack feedback in production");
+  const feedback: FeedbackStore = config.databaseUrl
+    ? createPostgresFeedbackStore(config.databaseUrl)
+    : createMemoryFeedbackStore();
   const providerKeys = providerKeysPresent(config);
   const app = createApp({
     identity,
@@ -1049,6 +1144,8 @@ export function buildApp(
     tasks,
     modelGateway,
     modelCredentials,
+    customProviders,
+    refreshCustomProviders,
     ...(overrides.modelCredentialFetch ? { modelCredentialFetch: overrides.modelCredentialFetch } : {}),
     acl,
     admin,
@@ -1097,8 +1194,10 @@ export function buildApp(
     metrics,
     runs,
     turnStream,
+    runActivity,
     tasks,
     ackPicks: ackEmojiPicks,
+    feedback,
     ackModelId: () => auxiliaryModelForProvider("anthropic"),
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     ...(harness.models.pickAckEmoji ? { pickAckEmoji: (t, c) => harness.models.pickAckEmoji!(t, c) } : {}),
@@ -1357,6 +1456,7 @@ export function buildApp(
       void runSignals.close?.();
       void sessionStateBus.close?.();
       void runActivity.close?.();
+      await feedback.close();
       await harness.turns.close?.();
       await tasks.close?.();
     },
@@ -1383,6 +1483,8 @@ export function buildApp(
     secretDrops,
     modelGateway,
     modelCredentials,
+    customProviders,
+    refreshCustomProviders,
     acl,
     skills,
     skillBundles,
@@ -1421,6 +1523,7 @@ export function buildApp(
     ...(monitorPoller ? { monitorPoller } : {}),
     ...(ambientJudgments ? { ambientJudgments } : {}),
     ...(ackEmojiPicks ? { ackEmojiPicks } : {}),
+    feedback,
     channelPolicy,
     skillSyncEngine,
     slackCore,

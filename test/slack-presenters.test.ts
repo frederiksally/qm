@@ -166,10 +166,10 @@ function presenterHarness(opts: { reactionDelayMs?: number } = {}) {
     postAck: async (t) => {
       calls.push(`post:${t}`);
     },
-    addReaction: async (e) => {
+    showBusy: async (e) => {
       calls.push(`add:${e}`);
     },
-    removeReaction: async (e) => {
+    clearBusy: async (e) => {
       calls.push(`remove:${e}`);
     },
     emojiCandidates: ["eyes"],
@@ -239,8 +239,8 @@ function pickHarness(emojiPick: Promise<string | undefined>) {
   const calls: string[] = [];
   const presenter = createAckPresenter({
     postAck: async (t) => void calls.push(`post:${t}`),
-    addReaction: async (e) => void calls.push(`add:${e}`),
-    removeReaction: async (e) => void calls.push(`remove:${e}`),
+    showBusy: async (e) => void calls.push(`add:${e}`),
+    clearBusy: async (e) => void calls.push(`remove:${e}`),
     emojiCandidates: ["eyes", "bug"],
     emojiPick,
     reactionDelayMs: 5,
@@ -303,8 +303,8 @@ test("ack presenter does not report a failed post as surfaced", async () => {
     postAck: async () => {
       throw new Error("checkpoint failed");
     },
-    addReaction: async () => {},
-    removeReaction: async () => {},
+    showBusy: async () => {},
+    clearBusy: async () => {},
   });
   presenter.onFirstBlock("On it.");
   await presenter.settle();

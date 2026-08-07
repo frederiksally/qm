@@ -17,10 +17,15 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
   const surface = run.request.surface;
   if (!target || !surface) return null;
   const editRef = run.deliveryState?.editRef;
+  const deliverySurface = run.deliveryState?.surface;
   const destination: Destination = {
     type: surface,
     target,
     ...(editRef ? { editRef } : {}),
+    ...(deliverySurface?.kind === "stream" && deliverySurface.channel
+      ? { stream: { channel: deliverySurface.channel, ts: deliverySurface.ts, unfinished: true as const } }
+      : {}),
+    ...(run.result?.pendingApprovals?.length ? { pendingApprovals: run.result.pendingApprovals } : {}),
     ...(taskList.length ? { taskList: taskList.map(({ id, title, status }) => ({ id, title, status })) } : {}),
   };
   const idempotencyKey = `run:${run.id}`;
@@ -37,6 +42,9 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
     if (resolveTurnOrigin(run.request).kind === "ambient") return null;
     const reason = run.result?.reason ?? "unknown error";
     return { destination, text: `⚠️ I couldn't finish that turn: ${reason}`, idempotencyKey };
+  }
+  if (run.result?.status === "pending_approval" && run.result.pendingApprovals?.length) {
+    return { destination, text: "Approval needed before I can continue.", idempotencyKey };
   }
   if (run.result?.status === "ok" && (run.result.reply || run.result.attachments?.length)) {
     return {
