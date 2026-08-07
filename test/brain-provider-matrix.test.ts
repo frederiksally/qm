@@ -151,7 +151,10 @@ for (const provider of PROVIDERS) {
   test(`${provider.name}: query returns fact lines through the shared query-service path`, async () => {
     const fake = fakeServer(provider.shape);
     const brain = createBrainQueryService(provider.queryOpts(fake.fetchImpl));
-    assert.deepEqual(await brain.query("deploy runbook"), ["The deploy runbook lives at ops/deploy.md"]);
+    assert.deepEqual(await brain.query("deploy runbook"), {
+      ok: true,
+      lines: ["The deploy runbook lives at ops/deploy.md"],
+    });
     const call = fake.calls.find((c) => c.kind === "mcp" && c.tool === provider.shape.tool);
     assert.ok(call, `the ${provider.shape.tool} tool was called`);
   });
@@ -160,7 +163,7 @@ for (const provider of PROVIDERS) {
     const fake = fakeServer(provider.shape, { failQuery: true });
     const audit = createAuditLog();
     const brain = createBrainQueryService({ ...provider.queryOpts(fake.fetchImpl), audit });
-    assert.deepEqual(await brain.query("deploy", undefined, "U1"), []);
+    assert.deepEqual(await brain.query("deploy", undefined, "U1"), { ok: false });
     const events = await audit.events();
     const ev = events.find((e) => e.action === `brain.${provider.shape.tool}`);
     assert.ok(ev, "an audit row was recorded for the failed query");
@@ -171,7 +174,7 @@ for (const provider of PROVIDERS) {
   test(`${provider.name}: an empty query never touches the network`, async () => {
     const fake = fakeServer(provider.shape);
     const brain = createBrainQueryService(provider.queryOpts(fake.fetchImpl));
-    assert.deepEqual(await brain.query("   "), []);
+    assert.deepEqual(await brain.query("   "), { ok: false });
     assert.equal(fake.calls.length, 0);
   });
 }

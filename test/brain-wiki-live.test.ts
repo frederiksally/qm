@@ -19,9 +19,20 @@ const wiki = (over: { mcpUrl?: string; bearerToken?: string } = {}) =>
   });
 
 test("live wiki: query returns ranked lines carrying the slug that brain_page takes", { skip }, async () => {
-  const hits = await wiki().query(KNOWN_SLUG);
-  assert.ok(hits.length > 0, "the live wiki returned no hits for the known slug");
-  assert.match(hits.join("\n"), new RegExp(KNOWN_SLUG), "a hit line names the slug the page read needs");
+  const read = await wiki().query(KNOWN_SLUG);
+  assert.equal(read.ok, true, "a search against a reachable wiki must be a successful read");
+  const lines = read.ok ? read.lines : [];
+  assert.ok(lines.length > 0, "the live wiki returned no hits for the known slug");
+  assert.match(lines.join("\n"), new RegExp(KNOWN_SLUG), "a hit line names the slug the page read needs");
+});
+
+test("live wiki: a query matching nothing is empty, never a failure", { skip }, async () => {
+  const read = await wiki().query("zzz-no-such-term-anywhere-in-this-wiki");
+  assert.deepEqual(read, { ok: true, lines: [] }, "the wiki answered 'no matches' — that is an answer, not an outage");
+});
+
+test("live wiki: a wrong bearer token on query is a failure, never a confident no-match", { skip }, async () => {
+  assert.deepEqual(await wiki({ bearerToken: "wrong-token-entirely" }).query(KNOWN_SLUG), { ok: false });
 });
 
 test("live wiki: page returns the full markdown for a known slug", { skip }, async () => {
@@ -57,5 +68,5 @@ test("live wiki: an unreachable wiki is a failure, never a confident empty", { s
   const svc = wiki({ mcpUrl: "http://127.0.0.1:1/mcp" });
   assert.deepEqual(await svc.page(KNOWN_SLUG), { ok: false });
   assert.deepEqual(await svc.recent(), { ok: false });
-  assert.deepEqual(await svc.query(KNOWN_SLUG), []);
+  assert.deepEqual(await svc.query(KNOWN_SLUG), { ok: false });
 });

@@ -590,8 +590,8 @@ test("secrets never enter the audit log (host + scope + tool only)", async () =>
 });
 
 const statusFetch =
-  (status: number, body: string): BrainFetch =>
-  async (url) => {
+  (status: number, body: (requestId: unknown) => string): BrainFetch =>
+  async (url, init) => {
     if (url.endsWith("/token"))
       return {
         ok: true,
@@ -600,17 +600,19 @@ const statusFetch =
           return JSON.stringify({ access_token: "t", expires_in: 3600 });
         },
       };
+    const requestId = (JSON.parse(init.body) as { id?: unknown }).id;
     return {
       ok: false,
       status,
       headers: { get: () => "application/json" },
       async text() {
-        return body;
+        return body(requestId);
       },
     };
   };
 
-const rpcNotFound = JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "unknown page: ghost" } });
+const rpcNotFound = (id: unknown) =>
+  JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "unknown page: ghost" } });
 
 test("mcpCall raises BrainNotFoundError for an HTTP 404 that carries a JSON-RPC error", async () => {
   const mcp = createBrainMcp({ mcpUrl: MCP_URL, fetchImpl: statusFetch(404, rpcNotFound) });
@@ -619,8 +621,23 @@ test("mcpCall raises BrainNotFoundError for an HTTP 404 that carries a JSON-RPC 
   await assert.rejects(() => mcp.call(token, "wiki_page", { slug: "ghost" }), /unknown page: ghost/);
 });
 
+test("mcpCall ignores a 404 error body whose JSON-RPC id is not the one it asked about", async () => {
+  const foreign = () =>
+    JSON.stringify({ jsonrpc: "2.0", id: 999, error: { code: -32000, message: "unknown page: ghost" } });
+  const mcp = createBrainMcp({ mcpUrl: MCP_URL, fetchImpl: statusFetch(404, foreign) });
+  const token = await mcp.mintToken("c", "s");
+  const err = await mcp.call(token, "wiki_page", { slug: "atlas" }).catch((e: unknown) => e);
+  assert.ok(err instanceof Error);
+  assert.equal(
+    err instanceof BrainNotFoundError,
+    false,
+    "an error-shaped body from a gateway must not be read as our own page answer",
+  );
+  assert.match(err.message, /failed \(HTTP 404\)/);
+});
+
 test("mcpCall keeps a bodyless 404 and every other non-ok status on the generic failure path", async () => {
-  const routing = createBrainMcp({ mcpUrl: MCP_URL, fetchImpl: statusFetch(404, "<html>nope</html>") });
+  const routing = createBrainMcp({ mcpUrl: MCP_URL, fetchImpl: statusFetch(404, () => "<html>nope</html>") });
   const routingToken = await routing.mintToken("c", "s");
   const routingErr = await routing.call(routingToken, "wiki_page", {}).catch((e: unknown) => e);
   assert.ok(routingErr instanceof Error);

@@ -1052,9 +1052,11 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       "or what has been happening lately. Prefer it over guessing or asking the person to re-explain " +
       "internal context. Returns ranked one-line entity summaries with their page slugs — follow up " +
       "with `brain_page` to read the page a summary points at, and reach for `brain_recent` rather than " +
-      "this tool when the job is what changed lately. STRICTLY READ-ONLY: nothing you say or remember " +
-      "here is ever written back. Distinct from `memory` (your own remembered facts about this person " +
-      "or place) and `history` (this conversation's transcript).",
+      "this tool when the job is what changed lately. A search that matched nothing and a wiki you " +
+      "could not reach are reported differently: never turn a failed lookup into a claim that the " +
+      "organization knows nothing about it. STRICTLY READ-ONLY: nothing you say or remember here is " +
+      "ever written back. Distinct from `memory` (your own remembered facts about this person or " +
+      "place) and `history` (this conversation's transcript).",
     parameters: Type.Object({
       query: Type.String({ description: "What to look up in the company wiki (a question or keywords)." }),
       limit: Type.Optional(Type.Integer({ description: "Max facts to return (default 20)." })),
@@ -1067,15 +1069,15 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         query: params.query,
         ...(params.limit !== undefined ? { limit: params.limit } : {}),
       });
-      const hits = await tc.queryBrain(params.query, params.limit);
+      const search = await tc.queryBrain(params.query, params.limit);
+      const hits = search.ok ? search.lines : [];
+      const miss = search.ok
+        ? `[the company wiki has nothing matching "${params.query}"]`
+        : `[could not reach the company wiki, so whether anything matches "${params.query}" is unknown]`;
       return recordResult(
         callId,
-        { tool: "query_brain", query: params.query, count: hits.length },
-        text(
-          hits.length
-            ? hits.map((h) => `- ${h}`).join("\n")
-            : `[the company wiki has nothing matching "${params.query}"]`,
-        ),
+        { tool: "query_brain", query: params.query, reached: search.ok, count: hits.length },
+        text(hits.length ? hits.map((h) => `- ${h}`).join("\n") : miss),
       );
     },
   });

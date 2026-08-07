@@ -108,8 +108,10 @@ const WRITE_TOOLS = new Set(["extract_facts", "recall", "capture", "think"]);
 test("query mints a read-only token and runs `query` by default, returning fact lines", async () => {
   const fake = fakeBrain();
   const brain = createBrainQueryService({ mcpUrl: MCP_URL, ...RO_CLIENT, fetchImpl: fake.fetchImpl });
-  const hits = await brain.query("deploy runbook");
-  assert.deepEqual(hits, ["The deploy runbook lives at ops/deploy.md"]);
+  assert.deepEqual(await brain.query("deploy runbook"), {
+    ok: true,
+    lines: ["The deploy runbook lives at ops/deploy.md"],
+  });
   assert.equal(
     fake.calls.find((c) => c.kind === "mcp" && c.tool && c.tool !== "whoami")?.tool,
     "query",
@@ -153,7 +155,11 @@ test("the read-only client NEVER issues a write tool (extract_facts/recall/captu
 test("an empty/whitespace query short-circuits without touching the network", async () => {
   const fake = fakeBrain();
   const brain = createBrainQueryService({ mcpUrl: MCP_URL, ...RO_CLIENT, fetchImpl: fake.fetchImpl });
-  assert.deepEqual(await brain.query("   "), []);
+  assert.deepEqual(
+    await brain.query("   "),
+    { ok: false },
+    "a blank query is a failed lookup, not a claim of no match",
+  );
   assert.equal(fake.mints, 0, "no token minted for an empty query");
   assert.equal(fake.calls.length, 0);
 });
@@ -161,29 +167,29 @@ test("an empty/whitespace query short-circuits without touching the network", as
 test("the limit caps returned lines and is forwarded to the brain", async () => {
   const fake = fakeBrain({ seed: ["alpha note", "alpha and beta", "alpha gamma", "alpha delta"] });
   const brain = createBrainQueryService({ mcpUrl: MCP_URL, ...RO_CLIENT, fetchImpl: fake.fetchImpl });
-  const hits = await brain.query("alpha", 2);
-  assert.equal(hits.length, 2, "result is capped at the limit");
+  const read = await brain.query("alpha", 2);
+  assert.equal(read.ok && read.lines.length, 2, "result is capped at the limit");
   const call = fake.calls.find((c) => c.tool === "query");
   assert.equal(call?.args?.limit, 2, "limit forwarded to the brain call");
 });
 
-test("fail-soft on a network error → [] (never throws)", async () => {
+test("fail-soft on a network error → a reported failure (never throws, never a false empty)", async () => {
   const fake = fakeBrain({ failNetwork: true });
   const brain = createBrainQueryService({ mcpUrl: MCP_URL, ...RO_CLIENT, fetchImpl: fake.fetchImpl });
-  assert.deepEqual(await brain.query("deploy"), []);
+  assert.deepEqual(await brain.query("deploy"), { ok: false });
 });
 
-test("fail-soft on a tool error → [] (never throws)", async () => {
+test("fail-soft on a tool error → a reported failure (never throws, never a false empty)", async () => {
   const fake = fakeBrain({ failQuery: true });
   const brain = createBrainQueryService({ mcpUrl: MCP_URL, ...RO_CLIENT, fetchImpl: fake.fetchImpl });
-  assert.deepEqual(await brain.query("deploy"), []);
+  assert.deepEqual(await brain.query("deploy"), { ok: false });
 });
 
 test("a tool error is recorded in the audit log (not silently swallowed as empty)", async () => {
   const fake = fakeBrain({ failQuery: true, queryErrorText: '{"error":"insufficient_scope"}' });
   const audit = createAuditLog();
   const brain = createBrainQueryService({ mcpUrl: MCP_URL, ...RO_CLIENT, fetchImpl: fake.fetchImpl, audit });
-  assert.deepEqual(await brain.query("deploy", undefined, "U1"), [], "still fails soft → []");
+  assert.deepEqual(await brain.query("deploy", undefined, "U1"), { ok: false }, "still fails soft");
   const events = await audit.events();
   const ev = events.find((e) => e.action === "brain.query");
   assert.ok(ev, "a brain.query audit event was recorded");
@@ -506,4 +512,68 @@ test("an HTTP 404 without a JSON-RPC error body is a transport failure, not an a
 test("an HTTP 404 on recent stays a failure — an absent feed is not an idle company", async () => {
   const brain = fakeBrain({ httpStatus: { wiki_recent: 404 } });
   assert.deepEqual(await wikiPageSvc(brain).recent(7), { ok: false });
+});
+
+const searchSvc = (brain: ReturnType<typeof fakeBrain>, audit?: ReturnType<typeof createAuditLog>) =>
+  createBrainQueryService({
+    mcpUrl: MCP_URL,
+    ...RO_CLIENT,
+    fetchImpl: brain.fetchImpl,
+    ...(audit ? { audit } : {}),
+  });
+
+test("a search that matches nothing is a reached-and-empty result, audited empty like an empty page", async () => {
+  const fake = fakeBrain();
+  const audit = createAuditLog();
+  const read = await searchSvc(fake, audit).query("nothing-whatsoever-matches-this", undefined, "U1");
+  assert.deepEqual(read, { ok: true, lines: [] }, "the wiki answered — nothing matched");
+  const events = await audit.events();
+  assert.equal(
+    events.find((e) => e.action === "brain.query")?.status,
+    "empty",
+    "a zero-match search audits empty, the same word an empty page uses",
+  );
+});
+
+test("a search that matches nothing is distinguishable from every way the lookup can fail", async () => {
+  const reached = await searchSvc(fakeBrain()).query("nothing-whatsoever-matches-this");
+  assert.deepEqual(reached, { ok: true, lines: [] });
+
+  const unreachable = await searchSvc(fakeBrain({ failNetwork: true })).query("deploy");
+  assert.deepEqual(unreachable, { ok: false }, "an outage is not an absence of matches");
+
+  const toolError = await searchSvc(fakeBrain({ failQuery: true })).query("deploy");
+  assert.deepEqual(toolError, { ok: false }, "a tool error is not an absence of matches");
+
+  const http404 = await searchSvc(fakeBrain({ httpStatus: { query: 404 } })).query("deploy");
+  assert.deepEqual(http404, { ok: false }, "a 404 on the search tool is not an absence of matches");
+
+  const badToken = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    fetchImpl: fakeBrain().fetchImpl,
+  });
+  assert.deepEqual(await badToken.query("deploy"), { ok: false }, "a token failure is not an absence of matches");
+});
+
+test("a token failure on query is audited as token_error and never reaches the brain", async () => {
+  const fake = fakeBrain();
+  const audit = createAuditLog();
+  const svc = createBrainQueryService({ mcpUrl: MCP_URL, auth: "bearer", fetchImpl: fake.fetchImpl, audit });
+  assert.deepEqual(await svc.query("deploy", undefined, "U1"), { ok: false });
+  assert.equal(fake.calls.length, 0, "an unresolvable token must not issue a brain call");
+  const events = await audit.events();
+  assert.ok(
+    events.find((e) => e.action === "brain.query")?.status?.startsWith("token_error:"),
+    `status records the token failure, got: ${events.find((e) => e.action === "brain.query")?.status}`,
+  );
+});
+
+test("a query read with no brain configured at all is a failure, never an empty result", async () => {
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    fetchImpl: fakeBrain({ failNetwork: true }).fetchImpl,
+  });
+  assert.deepEqual(await svc.query("deploy"), { ok: false });
 });

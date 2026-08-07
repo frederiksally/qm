@@ -22,11 +22,12 @@ export interface BrainQueryOptions {
 }
 
 export type BrainRead = { ok: true; body: string | null } | { ok: false };
+export type BrainSearch = { ok: true; lines: string[] } | { ok: false };
 
-const FAILED: BrainRead = { ok: false };
+const FAILED = { ok: false } as const;
 
 export interface BrainQueryService {
-  query(q: string, limit?: number, principalId?: string): Promise<string[]>;
+  query(q: string, limit?: number, principalId?: string): Promise<BrainSearch>;
   page(slug: string, principalId?: string): Promise<BrainRead>;
   recent(days?: number, principalId?: string): Promise<BrainRead>;
 }
@@ -78,13 +79,13 @@ export function createBrainQueryService(opts: BrainQueryOptions): BrainQueryServ
 
   return {
     async query(q, limit = defaultLimit, principalId) {
-      if (!q.trim()) return [];
+      if (!q.trim()) return FAILED;
       let token: string;
       try {
         token = await resolveToken();
       } catch (e) {
         audit(queryTool, `token_error: ${errMessage(e)}`, principalId);
-        return [];
+        return FAILED;
       }
       await logIdentityOnce(token, principalId);
       try {
@@ -92,12 +93,13 @@ export function createBrainQueryService(opts: BrainQueryOptions): BrainQueryServ
         const lines = resultText(result)
           .split("\n")
           .map((l) => l.trim())
-          .filter(Boolean);
-        audit(queryTool, "ok", principalId);
-        return lines.slice(0, limit);
+          .filter(Boolean)
+          .slice(0, limit);
+        audit(queryTool, lines.length ? "ok" : "empty", principalId);
+        return { ok: true, lines };
       } catch (e) {
         audit(queryTool, `error: ${errMessage(e)}`, principalId);
-        return [];
+        return FAILED;
       }
     },
 

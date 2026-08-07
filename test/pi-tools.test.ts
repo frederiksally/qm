@@ -48,7 +48,8 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
       return q.includes("budget") ? ["user#3 (2026-06-01T00:00:00.000Z): the budget doc is in shared/q2.md"] : [];
     },
     async queryBrain(q) {
-      return q.includes("runbook") ? ["The deploy runbook lives at ops/deploy.md"] : [];
+      if (q.includes("unreachable")) return { ok: false };
+      return { ok: true, lines: q.includes("runbook") ? ["The deploy runbook lives at ops/deploy.md"] : [] };
     },
     async brainPage(slug) {
       if (slug === "unreachable") return { ok: false };
@@ -965,6 +966,34 @@ test("query_brain registers only when brainQuery is on, and is read-only (delega
   const miss = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "query_brain").at(-1)!.payload;
   assert.equal(miss.count, 0);
   assert.match(miss.result, /company wiki has nothing matching/);
+});
+
+test("query_brain separates ranked hits, a genuine no-match, and an unreachable wiki", async () => {
+  const { tools, last } = brainToolFixture();
+  const queryBrain = tools.find((t) => t.name === "query_brain");
+
+  await call(queryBrain, { query: "runbook" });
+  const hit = last("query_brain");
+  assert.equal(hit.reached, true);
+  assert.equal(hit.count, 1);
+  assert.match(hit.result, /ops\/deploy\.md/);
+
+  await call(queryBrain, { query: "nothing-matches" });
+  const miss = last("query_brain");
+  assert.equal(miss.reached, true, "the wiki answered — nothing matched");
+  assert.equal(miss.count, 0);
+  assert.match(miss.result, /the company wiki has nothing matching "nothing-matches"/);
+
+  await call(queryBrain, { query: "unreachable" });
+  const failed = last("query_brain");
+  assert.equal(failed.reached, false);
+  assert.equal(failed.count, 0);
+  assert.match(failed.result, /could not reach the company wiki/);
+  assert.doesNotMatch(
+    failed.result,
+    /nothing matching/,
+    "a failed search must never be reported as the wiki having no match",
+  );
 });
 
 test("readOnly assembles ONLY observational tools — no execute/background/write/publish/control", () => {

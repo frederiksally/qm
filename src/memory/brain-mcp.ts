@@ -149,7 +149,7 @@ export function createBrainMcp(opts: { mcpUrl: string; fetchImpl?: BrainFetch; n
       if (!res.ok) {
         const failure =
           res.status === 404 ? parseMcpEnvelope(await res.text(), res.headers?.get("content-type"), id) : null;
-        if (failure?.error)
+        if (failure?.error && failure.id === id)
           throw new BrainNotFoundError(`brain ${name} not found: ${failure.error.message ?? "unknown"}`);
         throw new Error(`brain ${name} failed (HTTP ${res.status})`);
       }
