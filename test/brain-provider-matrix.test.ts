@@ -12,6 +12,7 @@ import { createMemoryService } from "../src/memory/memory-service.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { scopeId } from "../src/types.ts";
+import { loadConfig } from "../src/config.ts";
 
 const MCP_URL = "https://brain.provider.test";
 const BEARER_TOKEN = "static-bearer-tok";
@@ -235,3 +236,26 @@ for (const framing of ["sse", "json"] as const) {
     assert.ok(events.some((e) => e.action === "brain.search" && e.status === "ok"));
   });
 }
+
+test("brain page and recent tool names are read from env when set", () => {
+  const cfg = loadConfig({
+    BRAIN_MCP_URL: "https://brain.example.test/mcp",
+    BRAIN_AUTH: "bearer",
+    BRAIN_BEARER_TOKEN: "tok",
+    BRAIN_QUERY_TOOL: "wiki_search",
+    BRAIN_PAGE_TOOL: "wiki_page",
+    BRAIN_RECENT_TOOL: "wiki_recent",
+  });
+  assert.equal(cfg.brainPageTool, "wiki_page");
+  assert.equal(cfg.brainRecentTool, "wiki_recent");
+});
+
+test("brain page and recent tool names stay undefined when unset", () => {
+  const cfg = loadConfig({
+    BRAIN_MCP_URL: "https://brain.example.test/mcp",
+    BRAIN_AUTH: "bearer",
+    BRAIN_BEARER_TOKEN: "tok",
+  });
+  assert.equal(cfg.brainPageTool, undefined);
+  assert.equal(cfg.brainRecentTool, undefined);
+});

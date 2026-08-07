@@ -119,6 +119,8 @@ export interface Config {
   brainRoClientId?: string;
   brainRoClientSecret?: string;
   brainQueryTool?: string;
+  brainPageTool?: string;
+  brainRecentTool?: string;
   brainAuth?: "oauth-client-credentials" | "bearer";
   brainBearerToken?: string;
   workers: number;
@@ -820,6 +822,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.BRAIN_RO_CLIENT_ID ? { brainRoClientId: env.BRAIN_RO_CLIENT_ID } : {}),
     ...(env.BRAIN_RO_CLIENT_SECRET ? { brainRoClientSecret: env.BRAIN_RO_CLIENT_SECRET } : {}),
     ...(env.BRAIN_QUERY_TOOL ? { brainQueryTool: env.BRAIN_QUERY_TOOL } : {}),
+    ...(env.BRAIN_PAGE_TOOL ? { brainPageTool: env.BRAIN_PAGE_TOOL } : {}),
+    ...(env.BRAIN_RECENT_TOOL ? { brainRecentTool: env.BRAIN_RECENT_TOOL } : {}),
     ...(env.BRAIN_AUTH === "oauth-client-credentials" || env.BRAIN_AUTH === "bearer"
       ? { brainAuth: env.BRAIN_AUTH }
       : {}),
