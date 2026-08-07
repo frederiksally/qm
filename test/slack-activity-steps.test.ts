@@ -24,6 +24,15 @@ test("activity labels never expose payload contents", () => {
   }
 });
 
+test("company wiki activity never exposes internal brain tool names", () => {
+  assert.deepEqual(
+    ["query_brain", "brain_page", "brain_recent"].map((tool, index) =>
+      activityLabel(entry(index + 1, "tool_call", { tool })),
+    ),
+    ["Searching the company wiki", "Reading a company wiki page", "Reviewing recent company wiki updates"],
+  );
+});
+
 test("every Pi tool schema action and approval-gate form has an explicit payload-safe policy", () => {
   const tools = [
     ...createPiTools({ current: null }, { controlTools: true }),
