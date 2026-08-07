@@ -65,6 +65,7 @@ function fakeBrain(
       return resp({ result: { content: [{ type: "text", text: `# ${String(args.slug)}\n\nBody line one.` }] } });
     }
     if (name === "wiki_recent") {
+      if (args.days === 0) return resp({ result: { content: [{ type: "text", text: "" }] } });
       return resp({ result: { content: [{ type: "text", text: "- atlas moved\n- maria updated" }] } });
     }
     return resp({
@@ -251,7 +252,7 @@ test("recent passes the days window through and returns the feed", async () => {
   assert.deepEqual(call?.args, { days: 7 });
 });
 
-test("recent omits days when not given", async () => {
+test("recent sends days only when a window is given, and never a fabricated default", async () => {
   const brain = fakeBrain();
   const svc = createBrainQueryService({
     mcpUrl: MCP_URL,
@@ -261,8 +262,12 @@ test("recent omits days when not given", async () => {
     fetchImpl: brain.fetchImpl,
   });
   await svc.recent();
-  const call = brain.calls.find((c) => c.kind === "mcp");
-  assert.deepEqual(call?.args, {});
+  await svc.recent(7);
+  await svc.recent(0);
+  assert.deepEqual(
+    brain.calls.filter((c) => c.kind === "mcp").map((c) => c.args),
+    [{}, { days: 7 }, { days: 0 }],
+  );
 });
 
 test("bearer auth never calls whoami for page or recent", async () => {
@@ -281,4 +286,99 @@ test("bearer auth never calls whoami for page or recent", async () => {
     brain.calls.some((c) => c.tool === "whoami"),
     false,
   );
+});
+
+test("page and recent audit ok against the calling principal on success", async () => {
+  const brain = fakeBrain();
+  const audit = createAuditLog();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    recentTool: "wiki_recent",
+    fetchImpl: brain.fetchImpl,
+    audit,
+  });
+  await svc.page("atlas", "U1");
+  await svc.recent(7, "U1");
+  const events = await audit.events();
+  assert.deepEqual(
+    events.map((e) => [e.action, e.status, e.principalId]),
+    [
+      ["brain.wiki_page", "ok", "U1"],
+      ["brain.wiki_recent", "ok", "U1"],
+    ],
+  );
+});
+
+test("an empty page and an empty recent feed are audited as empty, not ok", async () => {
+  const brain = fakeBrain();
+  const audit = createAuditLog();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page",
+    recentTool: "wiki_recent",
+    fetchImpl: brain.fetchImpl,
+    audit,
+  });
+  assert.equal(await svc.page("missing", "U1"), null);
+  assert.equal(await svc.recent(0, "U1"), null);
+  const events = await audit.events();
+  assert.deepEqual(
+    events.map((e) => [e.action, e.status]),
+    [
+      ["brain.wiki_page", "empty"],
+      ["brain.wiki_recent", "empty"],
+    ],
+  );
+});
+
+test("a tool error on page or recent is audited as error (not swallowed as empty) and fails soft to null", async () => {
+  const brain = fakeBrain();
+  const audit = createAuditLog();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    bearerToken: "tok",
+    pageTool: "wiki_page_private",
+    recentTool: "wiki_recent_private",
+    fetchImpl: brain.fetchImpl,
+    audit,
+  });
+  assert.equal(await svc.page("atlas", "U1"), null, "page still fails soft → null");
+  assert.equal(await svc.recent(7, "U1"), null, "recent still fails soft → null");
+  const events = await audit.events();
+  for (const action of ["brain.wiki_page_private", "brain.wiki_recent_private"]) {
+    const ev = events.find((e) => e.action === action);
+    assert.ok(ev, `a ${action} audit event was recorded`);
+    assert.ok(ev?.status?.startsWith("error:"), `status records the error, got: ${ev?.status}`);
+    assert.ok(ev?.status?.includes("insufficient_scope"), `the underlying detail is surfaced, got: ${ev?.status}`);
+  }
+});
+
+test("a token failure on page or recent is audited as token_error and never reaches the brain", async () => {
+  const brain = fakeBrain();
+  const audit = createAuditLog();
+  const svc = createBrainQueryService({
+    mcpUrl: MCP_URL,
+    auth: "bearer",
+    pageTool: "wiki_page",
+    recentTool: "wiki_recent",
+    fetchImpl: brain.fetchImpl,
+    audit,
+  });
+  assert.equal(await svc.page("atlas", "U1"), null);
+  assert.equal(await svc.recent(7, "U1"), null);
+  assert.equal(brain.calls.length, 0, "an unresolvable token must not issue a brain call");
+  const events = await audit.events();
+  assert.deepEqual(
+    events.map((e) => e.action),
+    ["brain.wiki_page", "brain.wiki_recent"],
+  );
+  for (const ev of events) {
+    assert.ok(ev.status?.startsWith("token_error:"), `status records the token failure, got: ${ev.status}`);
+  }
 });
