@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPiTools, pauseStampAfterToolCall, type ToolContextRef } from "../src/harness/pi-tools.ts";
+import {
+  createPiTools,
+  pauseStampAfterToolCall,
+  READ_ONLY_TOOL_NAMES,
+  type ToolContextRef,
+} from "../src/harness/pi-tools.ts";
 import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
 import { CommandDenied, NeedsApproval, type ToolContext } from "../src/tools/primitives.ts";
 import type { EntryType, SessionEntry } from "../src/types.ts";
@@ -49,6 +54,12 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
     },
     async queryBrain(q) {
       return q.includes("runbook") ? ["The deploy runbook lives at ops/deploy.md"] : [];
+    },
+    async brainPage(slug) {
+      return slug === "atlas" ? "# Atlas\n- (2026-06-01) shipped the ingest rewrite\n" : null;
+    },
+    async brainRecent(days) {
+      return days === 0 ? null : "- atlas (2026-06-01): shipped the ingest rewrite\n";
     },
     async backgroundStart(command) {
       return {
@@ -1721,4 +1732,62 @@ test("pauseStampAfterToolCall stamps terminate on sibling results once the turn 
 
   const withPrior = pauseStampAfterToolCall(ref, () => ({ terminate: false }));
   assert.deepEqual(await withPrior({}, undefined), { terminate: true });
+});
+
+test("brain page and recent tools are registered when their options are on", () => {
+  const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  const names = createPiTools(ref, { brainQuery: true, brainPage: true, brainRecent: true }).map((t) => t.name);
+  assert.ok(names.includes("query_brain"));
+  assert.ok(names.includes("brain_page"));
+  assert.ok(names.includes("brain_recent"));
+});
+
+test("brain page and recent tools are absent when their options are off", () => {
+  const ref: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  const names = createPiTools(ref, { brainQuery: true }).map((t) => t.name);
+  assert.ok(names.includes("query_brain"));
+  assert.equal(names.includes("brain_page"), false);
+  assert.equal(names.includes("brain_recent"), false);
+});
+
+test("brain read tools are all classified read-only", () => {
+  for (const name of ["query_brain", "brain_page", "brain_recent"]) {
+    assert.ok(READ_ONLY_TOOL_NAMES.has(name), `${name} must be read-only`);
+  }
+});
+
+test("brain_page and brain_recent read through the tool context and report misses as misses", async () => {
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+  };
+  const tools = createPiTools(ref, { brainQuery: true, brainPage: true, brainRecent: true });
+  const page = tools.find((t) => t.name === "brain_page");
+  const recent = tools.find((t) => t.name === "brain_recent");
+
+  await call(page, { slug: "atlas" });
+  const hit = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_page").at(-1)!.payload;
+  assert.equal(hit.found, true);
+  assert.match(hit.result, /shipped the ingest rewrite/);
+
+  await call(page, { slug: "nope" });
+  const miss = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_page").at(-1)!.payload;
+  assert.equal(miss.found, false);
+  assert.match(miss.result, /no page with slug "nope"/);
+
+  await call(recent, {});
+  const feed = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_recent").at(-1)!.payload;
+  assert.equal(feed.found, true);
+  assert.match(feed.result, /shipped the ingest rewrite/);
+
+  await call(recent, { days: 0 });
+  const empty = emitted.filter((e) => e.type === "tool_result" && e.payload.tool === "brain_recent").at(-1)!.payload;
+  assert.equal(empty.found, false);
+  assert.match(empty.result, /no recent activity recorded/);
+  const windowed = emitted.filter((e) => e.type === "tool_call" && e.payload.tool === "brain_recent").at(-1)!.payload;
+  assert.equal(windowed.days, 0);
 });

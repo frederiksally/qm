@@ -164,6 +164,8 @@ export interface ToolContext extends SurfaceToolDeps {
   memoryRewrite(content: string): Promise<true | null>;
   history(q: string, limit?: number): Promise<string[]>;
   queryBrain(q: string, limit?: number): Promise<string[]>;
+  brainPage(slug: string): Promise<string | null>;
+  brainRecent(days?: number): Promise<string | null>;
   backgroundStart(command: string, opts?: { ttlSeconds?: number }): Promise<BackgroundStartResult>;
   backgroundPoll(
     processId: string,
@@ -793,6 +795,16 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     async queryBrain(q: string, limit?: number): Promise<string[]> {
       if (!deps.brain) return [];
       return deps.brain.query(q, limit, deps.createdBy);
+    },
+
+    async brainPage(slug: string): Promise<string | null> {
+      if (!deps.brain) return null;
+      return deps.brain.page(slug, deps.createdBy);
+    },
+
+    async brainRecent(days?: number): Promise<string | null> {
+      if (!deps.brain) return null;
+      return deps.brain.recent(days, deps.createdBy);
     },
 
     async backgroundStart(command: string, opts?: { ttlSeconds?: number }): Promise<BackgroundStartResult> {

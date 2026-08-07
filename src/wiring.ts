@@ -576,6 +576,8 @@ export function buildApp(
           ...(config.brainRoClientSecret ? { clientSecret: config.brainRoClientSecret } : {}),
           ...(config.brainBearerToken ? { bearerToken: config.brainBearerToken } : {}),
           ...(config.brainQueryTool ? { queryTool: config.brainQueryTool } : {}),
+          ...(config.brainPageTool ? { pageTool: config.brainPageTool } : {}),
+          ...(config.brainRecentTool ? { recentTool: config.brainRecentTool } : {}),
           audit: auditLog,
         })
       : undefined;

@@ -106,6 +106,8 @@ const CHILD_TOOL_NAMES = new Set([
   "memory",
   "history",
   "query_brain",
+  "brain_page",
+  "brain_recent",
   "background",
 ]);
 const CLAUDE_CHILD_AGENT_TYPES = new Set(["research", "code", "consult"]);

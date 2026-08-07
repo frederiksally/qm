@@ -238,6 +238,8 @@ export interface PiToolsOptions {
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
   brainQuery?: boolean;
+  brainPage?: boolean;
+  brainRecent?: boolean;
   controlTools?: boolean;
   readOnly?: boolean;
   surfaceTools?: boolean;
@@ -254,6 +256,16 @@ export function coreToolOptions(config: Config): CoreToolOptions {
     brainQuery: Boolean(
       config.brainMcpUrl && (config.brainBearerToken || (config.brainRoClientId && config.brainRoClientSecret)),
     ),
+    brainPage: Boolean(
+      config.brainMcpUrl &&
+      config.brainPageTool &&
+      (config.brainBearerToken || (config.brainRoClientId && config.brainRoClientSecret)),
+    ),
+    brainRecent: Boolean(
+      config.brainMcpUrl &&
+      config.brainRecentTool &&
+      (config.brainBearerToken || (config.brainRoClientId && config.brainRoClientSecret)),
+    ),
     controlTools: Boolean(config.signingSecret && config.apiBaseUrl),
     execTimeoutMs: config.execTimeoutDefaultMs,
     execTimeoutCeilingMs: config.execTimeoutMaxMs,
@@ -262,7 +274,14 @@ export function coreToolOptions(config: Config): CoreToolOptions {
   };
 }
 
-const READ_ONLY_TOOL_NAMES = new Set(["memory", "history", "query_brain", "finish_silently"]);
+export const READ_ONLY_TOOL_NAMES = new Set([
+  "memory",
+  "history",
+  "query_brain",
+  "brain_page",
+  "brain_recent",
+  "finish_silently",
+]);
 
 export function pauseStampAfterToolCall(
   ref: Pick<ToolContextRef, "pausedOnApproval" | "silentRequested">,
@@ -283,6 +302,8 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
   const ownerAuthExec = !!opts?.ownerAuthExec;
   const reachExec = !!opts?.reachExec;
   const brainQuery = !!opts?.brainQuery;
+  const brainPage = !!opts?.brainPage;
+  const brainRecent = !!opts?.brainRecent;
   const controlTools = !!opts?.controlTools;
   const surfaceTools = !!opts?.surfaceTools;
   const execTimeoutSec = Math.round((opts?.execTimeoutMs ?? CONFIG_DEFAULTS.execTimeoutDefaultSec * 1000) / 1000);
@@ -1022,13 +1043,17 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     name: "query_brain",
     label: "query_brain",
     description:
-      "Query the team's external knowledge brain — a shared, curated corpus of facts, docs, and " +
-      "decisions the team maintains outside this conversation. Use it to look up team knowledge you " +
-      "don't already have (how something works, who owns what, a prior decision, a runbook). It is " +
-      "STRICTLY READ-ONLY: you search the brain, you never write to it — nothing you say or remember " +
-      "here is stored in the team brain. Returns the matching fact lines (most relevant first). " +
-      "Distinct from `memory` (your own remembered facts about this person/place) and `history` (this " +
-      "conversation's transcript).",
+      "Search the company wiki — an automatically maintained, always-current picture of what this " +
+      "organization is doing, built from what people actually said in Slack and meetings and from " +
+      "the work they track. It holds a page per person, project, topic, company, event, and concept, " +
+      "each carrying dated claims with links back to the source. Reach for it whenever a turn touches " +
+      "company reality you do not already have in front of you: who someone is or what they are " +
+      "working on, what a project is and where it stands, what was decided about something and when, " +
+      "or what has been happening lately. Prefer it over guessing or asking the person to re-explain " +
+      "internal context. Returns ranked one-line entity summaries with their page slugs — follow up " +
+      "with `brain_page` to read the page a summary points at. STRICTLY READ-ONLY: nothing you say or " +
+      "remember here is ever written back. Distinct from `memory` (your own remembered facts about " +
+      "this person or place) and `history` (this conversation's transcript).",
     parameters: Type.Object({
       query: Type.String({ description: "What to look up in the team brain (a question or keywords)." }),
       limit: Type.Optional(Type.Integer({ description: "Max facts to return (default 20)." })),
@@ -1050,6 +1075,58 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
             ? hits.map((h) => `- ${h}`).join("\n")
             : `[the team brain has nothing matching "${params.query}"]`,
         ),
+      );
+    },
+  });
+
+  const brainPageDef = defineTool({
+    name: "brain_page",
+    label: "brain_page",
+    description:
+      "Read one full company wiki page by its slug, as returned by `query_brain`. The page carries " +
+      "the entity's current state, decisions, open questions, and a dated timeline, every claim " +
+      "linked to the source it came from. Use this when a search summary is not enough and you need " +
+      "the detail — the whole history of a project, everything known about a person's work, the " +
+      "reasoning behind a decision. STRICTLY READ-ONLY.",
+    parameters: Type.Object({
+      slug: Type.String({ description: 'Entity slug from query_brain results, for example "atlas".' }),
+    }),
+    async execute(callId, params) {
+      const tc = ref.current;
+      if (!tc) return text("[error] no active tool context");
+      await recordCall(callId, { tool: "brain_page", slug: params.slug });
+      const body = await tc.brainPage(params.slug);
+      return recordResult(
+        callId,
+        { tool: "brain_page", slug: params.slug, found: body !== null },
+        text(body ?? `[the company wiki has no page with slug "${params.slug}"]`),
+      );
+    },
+  });
+
+  const brainRecentDef = defineTool({
+    name: "brain_recent",
+    label: "brain_recent",
+    description:
+      "Read what has been moving in the company recently: which wiki pages changed and what was " +
+      "added, newest first. Use it for orientation when a turn asks what is going on, what changed " +
+      "this week, or what you might have missed. An empty result genuinely means nothing was " +
+      "recorded in the window — say so rather than filling the gap. STRICTLY READ-ONLY.",
+    parameters: Type.Object({
+      days: Type.Optional(Type.Integer({ description: "Window in days. Omit for the standard maintained feed." })),
+    }),
+    async execute(callId, params) {
+      const tc = ref.current;
+      if (!tc) return text("[error] no active tool context");
+      await recordCall(callId, {
+        tool: "brain_recent",
+        ...(params.days !== undefined ? { days: params.days } : {}),
+      });
+      const body = await tc.brainRecent(params.days);
+      return recordResult(
+        callId,
+        { tool: "brain_recent", found: body !== null },
+        text(body ?? "[the company wiki has no recent activity recorded]"),
       );
     },
   });
@@ -2443,6 +2520,8 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     memory,
     history,
     ...(brainQuery ? [queryBrain] : []),
+    ...(brainPage ? [brainPageDef] : []),
+    ...(brainRecent ? [brainRecentDef] : []),
     background,
     ...(controlTools ? [cron, share] : []),
     ...(controlTools || surfaceTools ? [guidance] : []),

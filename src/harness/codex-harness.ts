@@ -121,6 +121,8 @@ const CODEX_CHILD_TOOL_NAMES = new Set([
   "memory",
   "history",
   "query_brain",
+  "brain_page",
+  "brain_recent",
   "background",
 ]);
 
