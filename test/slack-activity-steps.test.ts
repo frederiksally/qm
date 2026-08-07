@@ -24,12 +24,12 @@ test("activity labels never expose payload contents", () => {
   }
 });
 
-test("company wiki activity never exposes internal brain tool names", () => {
+test("internal context activity uses user-centered language", () => {
   assert.deepEqual(
     ["query_brain", "brain_page", "brain_recent"].map((tool, index) =>
       activityLabel(entry(index + 1, "tool_call", { tool })),
     ),
-    ["Searching the company wiki", "Reading a company wiki page", "Reviewing recent company wiki updates"],
+    ["Looking up relevant context", "Reading background context", "Checking recent updates"],
   );
 });
 

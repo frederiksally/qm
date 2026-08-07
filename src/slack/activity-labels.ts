@@ -12,9 +12,9 @@ const TOOL_LABELS: Record<string, string> = {
   background: "Managing background work",
   cron: "Managing scheduled work",
   slack: "Working in Slack",
-  query_brain: "Searching the company wiki",
-  brain_page: "Reading a company wiki page",
-  brain_recent: "Reviewing recent company wiki updates",
+  query_brain: "Looking up relevant context",
+  brain_page: "Reading background context",
+  brain_recent: "Checking recent updates",
 };
 
 const ACTION_LABELS: Record<string, string> = {
