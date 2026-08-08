@@ -108,32 +108,7 @@ test("an uncheckpointed stream is removed before normal-post fallback", async ()
   assert.deepEqual(calls, ["stop", "remove:S1"]);
 });
 
-test("a stream that cannot be removed after terminal mismatch is orphaned", async () => {
-  const calls: string[] = [];
-  const streamer = {
-    ts: undefined as string | undefined,
-    async append() {
-      this.ts = "S1";
-    },
-    async stop() {
-      calls.push("stop");
-    },
-  };
-  const presenter = createStreamPresenter({
-    create: () => streamer,
-    checkpoint: async () => {},
-    finalize: async () => {},
-    remove: async () => {
-      calls.push("remove");
-      throw new Error("delete failed");
-    },
-  });
-  presenter.pushDelta("draft");
-  assert.equal(await presenter.finish("final", undefined, "final"), "orphaned");
-  assert.deepEqual(calls, ["stop", "remove"]);
-});
-
-test("an empty terminal answer removes stale streamed draft text", async () => {
+test("a direct stream never replaces a successfully streamed reply", async () => {
   const calls: string[] = [];
   const streamer = {
     ts: undefined as string | undefined,
@@ -151,8 +126,84 @@ test("an empty terminal answer removes stale streamed draft text", async () => {
     remove: async () => void calls.push("remove"),
   });
   presenter.pushDelta("draft");
-  assert.equal(await presenter.finish("", undefined, ""), "none");
-  assert.deepEqual(calls, ["stop", "remove"]);
+  assert.equal(await presenter.finish("final", undefined, "final"), "delivered");
+  assert.deepEqual(calls, ["stop"]);
+});
+
+test("an empty terminal answer does not delete a successfully streamed reply", async () => {
+  const calls: string[] = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append() {
+      this.ts = "S1";
+    },
+    async stop() {
+      calls.push("stop");
+    },
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async () => {},
+    finalize: async () => {},
+    remove: async () => void calls.push("remove"),
+  });
+  presenter.pushDelta("draft");
+  assert.equal(await presenter.finish("", undefined, ""), "delivered");
+  assert.deepEqual(calls, ["stop"]);
+});
+
+test("a tool turn keeps its narration, replaces activity, and appends only the authoritative answer", async () => {
+  const appends: Array<{ markdown_text?: string; chunks?: Array<Record<string, unknown>> }> = [];
+  const stops: Array<{ markdown_text?: string }> = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append(args: { markdown_text?: string; chunks?: Array<Record<string, unknown>> }) {
+      this.ts ??= "S1";
+      appends.push(args);
+    },
+    async stop(args: { markdown_text?: string } = {}) {
+      stops.push(args);
+    },
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async () => {},
+    finalize: async () => {},
+    remove: async () => {},
+  });
+  presenter.pushDelta("I’ll check that.");
+  presenter.beginToolWork();
+  presenter.pushDelta("Provisional reasoning that must stay hidden.");
+  presenter.pushActivity([{ id: "tool", title: "Looking up relevant context", state: "in_progress" }]);
+  assert.equal(await presenter.finish("The answer is 42.", undefined, "The answer is 42."), "delivered");
+  assert.equal(appends.filter(({ markdown_text }) => markdown_text).map(({ markdown_text }) => markdown_text).join(""), "I’ll check that.");
+  assert.equal(stops[0]?.markdown_text, "\n\nThe answer is 42.");
+  assert.equal(appends.some(({ markdown_text }) => markdown_text?.includes("Provisional reasoning")), false);
+});
+
+test("a long tool narration always leaves room for the authoritative answer", async () => {
+  const stops: Array<{ markdown_text?: string }> = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append() {
+      this.ts ??= "S1";
+    },
+    async stop(args: { markdown_text?: string } = {}) {
+      stops.push(args);
+    },
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async () => {},
+    finalize: async () => {},
+    remove: async () => {},
+  });
+  presenter.pushDelta("n".repeat(40_000));
+  presenter.beginToolWork();
+  assert.equal(await presenter.finish("a".repeat(15_000)), "delivered");
+  assert.ok(stops[0]?.markdown_text?.startsWith("\n\n"));
+  assert.equal(stops[0]?.markdown_text?.endsWith("…"), true);
+  assert.equal(stops[0]?.markdown_text?.length, 12_000);
 });
 
 test("markdown text fields split at Unicode-safe 12000-character boundaries", async () => {
@@ -180,13 +231,16 @@ test("markdown text fields split at Unicode-safe 12000-character boundaries", as
 
 test("live text applies the same 40000-character ceiling as terminal delivery", async () => {
   const appends: string[] = [];
+  let stopped = "";
   const streamer = {
     ts: undefined as string | undefined,
     async append(args: { markdown_text?: string }) {
       this.ts ??= "S1";
       appends.push(args.markdown_text ?? "");
     },
-    async stop() {},
+    async stop(args: { markdown_text?: string } = {}) {
+      stopped = args.markdown_text ?? "";
+    },
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
@@ -196,20 +250,23 @@ test("live text applies the same 40000-character ceiling as terminal delivery", 
   });
   const text = `${"a".repeat(39_999)}😀tail`;
   presenter.pushDelta(text);
-  assert.equal(await presenter.finish(text), "none");
-  assert.equal(appends.join("").length, 40_000);
-  assert.equal(appends.join("").endsWith("…"), true);
+  assert.equal(await presenter.finish(text), "delivered");
+  assert.equal(`${appends.join("")}${stopped}`.length, 40_000);
+  assert.equal(`${appends.join("")}${stopped}`.endsWith("…"), true);
 });
 
 test("a delta after exactly 40000 live characters cannot overflow the ceiling", async () => {
   const appends: string[] = [];
+  let stopped = "";
   const streamer = {
     ts: undefined as string | undefined,
     async append(args: { markdown_text?: string }) {
       this.ts ??= "S1";
       appends.push(args.markdown_text ?? "");
     },
-    async stop() {},
+    async stop(args: { markdown_text?: string } = {}) {
+      stopped = args.markdown_text ?? "";
+    },
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
@@ -220,7 +277,7 @@ test("a delta after exactly 40000 live characters cannot overflow the ceiling", 
   presenter.pushDelta("a".repeat(40_000));
   presenter.pushDelta("overflow");
   assert.equal(await presenter.finish(`${"a".repeat(40_000)}overflow`), "delivered");
-  assert.equal(appends.join("").length, 40_000);
+  assert.equal(`${appends.join("")}${stopped}`.length, 40_000);
 });
 
 test("activity updates replace one stable card and preserve Unicode titles", async () => {

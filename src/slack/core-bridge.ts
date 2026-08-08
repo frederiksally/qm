@@ -17,6 +17,7 @@ interface CoreCallHooks {
   onTasks?: (tasks: RunTaskView[]) => void;
   onActivity?: (steps: SlackActivityStep[]) => void;
   onDelta?: (delta: string) => void;
+  onToolCall?: () => void;
 }
 
 export interface CoreBridge {
@@ -176,6 +177,7 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
         ...(hooks.onTasks ? { onTasks: hooks.onTasks } : {}),
         ...(hooks.onActivity ? { onActivity: hooks.onActivity } : {}),
         ...(hooks.onDelta ? { onDelta: hooks.onDelta } : {}),
+        ...(hooks.onToolCall ? { onToolCall: hooks.onToolCall } : {}),
       });
     } catch (err) {
       inFlightRuns.delete(runId);

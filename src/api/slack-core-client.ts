@@ -33,6 +33,7 @@ import { modelDisplayName } from "../model/pi-models.ts";
 
 interface SlackRunHooks {
   onDelta?(delta: string): void;
+  onToolCall?(): void;
   onFirstBlock?(text: string): void;
   onSurfacePosted?(): void;
   onTasks?(tasks: Array<{ id: string; title: string; status: TaskStatus }>): void | Promise<void>;
@@ -198,6 +199,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
 
     async waitRun(runId, hooks = {}) {
       let firstBlockSignaled = false;
+      let toolCallSignaled = false;
       let surfaceSignaled = false;
       const signalFirstBlock = (text: string): void => {
         if (firstBlockSignaled || !text.trim()) return;
@@ -209,6 +211,11 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
         surfaceSignaled = true;
         hooks.onSurfacePosted?.();
       };
+      const signalToolCall = (): void => {
+        if (toolCallSignaled) return;
+        toolCallSignaled = true;
+        hooks.onToolCall?.();
+      };
       const waiters = terminalWaiters.get(runId) ?? new Set();
       terminalWaiters.set(runId, waiters);
       let receivedDeltas = 0;
@@ -218,6 +225,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
           receivedDeltas++;
           hooks.onDelta(delta);
         },
+        onToolCall: signalToolCall,
         onFirstBlock: signalFirstBlock,
         onSurfacePosted: signalSurface,
       });
@@ -248,6 +256,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
             activitySteps = [];
             console.error(`[slack-core-client] run activity cursor gap run=${runId}`);
           }
+          if (page.entries.some(({ type }) => type === "tool_call")) signalToolCall();
           activityCursor = page.cursor ?? activityCursor;
           activitySteps = projectActivitySteps(page.entries, activitySteps);
           if (page.entries.length < 200) break;

@@ -14,6 +14,7 @@ interface Streamer {
 
 export interface StreamPresenter {
   pushDelta(delta: string): void;
+  beginToolWork(): void;
   pushActivity(steps: SlackActivityStep[]): void;
   finish(
     text: string,
@@ -27,6 +28,7 @@ export interface StreamPresenter {
 
 const MARKDOWN_TEXT_LIMIT = 12_000;
 const LIVE_TEXT_LIMIT = 40_000;
+const PROVISIONAL_TEXT_LIMIT = LIVE_TEXT_LIMIT - MARKDOWN_TEXT_LIMIT;
 
 function splitMarkdownText(text: string): string[] {
   const chunks: string[] = [];
@@ -67,17 +69,20 @@ export function createStreamPresenter(deps: {
   let opened = false;
   let liveTextLength = 0;
   let liveTextTruncated = false;
+  let provisionalTextTruncated = false;
   let liveText = "";
   let currentActivity: SlackActivityStep | undefined;
+  let toolWork = false;
   const accepted = (text: string): string => {
     liveText += text;
     return text;
   };
-  const boundLiveText = (text: string): string => {
-    if (!text || liveTextTruncated) return "";
-    const remaining = LIVE_TEXT_LIMIT - liveTextLength;
+  const boundLiveText = (text: string, limit = LIVE_TEXT_LIMIT, provisional = false): string => {
+    if (!text || (provisional ? provisionalTextTruncated : liveTextTruncated)) return "";
+    const remaining = limit - liveTextLength;
     if (remaining <= 0) {
-      liveTextTruncated = true;
+      if (provisional) provisionalTextTruncated = true;
+      else liveTextTruncated = true;
       return "";
     }
     if (text.length <= remaining) {
@@ -85,9 +90,15 @@ export function createStreamPresenter(deps: {
       return accepted(text);
     }
     let bounded = "";
+    const contentLimit = provisional ? remaining : Math.max(0, remaining - 1);
     for (const char of text) {
-      if (bounded.length + char.length > Math.max(0, remaining - 1)) break;
+      if (bounded.length + char.length > contentLimit) break;
       bounded += char;
+    }
+    if (provisional) {
+      liveTextLength += bounded.length;
+      provisionalTextTruncated = true;
+      return accepted(bounded);
     }
     liveTextLength += bounded.length + 1;
     liveTextTruncated = true;
@@ -140,7 +151,13 @@ export function createStreamPresenter(deps: {
   };
   return {
     pushDelta(delta) {
-      append(boundLiveText(projector.push(delta)));
+      if (toolWork) return;
+      append(boundLiveText(projector.push(delta), PROVISIONAL_TEXT_LIMIT, true));
+    },
+    beginToolWork() {
+      if (toolWork) return;
+      toolWork = true;
+      append(boundLiveText(projector.finish(), PROVISIONAL_TEXT_LIMIT, true));
     },
     pushActivity(steps) {
       const step =
@@ -179,22 +196,13 @@ export function createStreamPresenter(deps: {
           },
         ]);
       }
-      append(boundLiveText(projector.finish()));
+      if (!toolWork) append(boundLiveText(projector.finish(), PROVISIONAL_TEXT_LIMIT, true));
       await chain;
       const terminalText = terminalStreamText === null ? liveText || text : terminalStreamText;
-      if (!terminalText.startsWith(liveText)) {
-        if (streamer?.ts) {
-          await streamer.stop().catch((error) => deps.onError?.(error));
-          try {
-            await deps.remove(streamer.ts);
-          } catch (error) {
-            deps.onError?.(error);
-            return "orphaned";
-          }
-        }
-        return "none";
-      }
-      const terminalRemainder = boundLiveText(terminalText.slice(liveText.length));
+      let terminalSuffix = "";
+      if (terminalText.startsWith(liveText)) terminalSuffix = terminalText.slice(liveText.length);
+      else if (toolWork && terminalText) terminalSuffix = `${liveText ? "\n\n" : ""}${terminalText}`;
+      const terminalRemainder = boundLiveText(terminalSuffix);
       if (!opened && !terminalRemainder) return "none";
       opened = true;
       const active = ensure();

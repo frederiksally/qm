@@ -459,3 +459,15 @@ test("publish without begin notifies a subscriber and establishes liveness", () 
   assert.equal(received, "text");
   assert.equal(stream.alive("r1"), true);
 });
+
+test("the first tool call notifies current and late subscribers once", () => {
+  const stream = createTurnStream();
+  let current = 0;
+  let late = 0;
+  stream.subscribe("r1", { onToolCall: () => current++ });
+  stream.noteToolCall("r1");
+  stream.noteToolCall("r1");
+  stream.subscribe("r1", { onToolCall: () => late++ });
+  assert.equal(current, 1);
+  assert.equal(late, 1);
+});
