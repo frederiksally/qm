@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createFeedback, FEEDBACK_ACTION_ID, feedbackBlocks } from "../src/slack/feedback.ts";
+import { createFeedback, FEEDBACK_ACTION_ID, withFeedbackControls } from "../src/slack/feedback.ts";
 
-test("feedback blocks bind both outcomes to one run", () => {
-  assert.deepEqual(feedbackBlocks("run-1"), [
+test("feedback controls preserve visible message content and bind both outcomes to one run", () => {
+  const content = [{ type: "section", text: { type: "mrkdwn", text: "Answer" } }];
+  assert.deepEqual(withFeedbackControls(content, "run-1"), [
+    ...content,
     {
       type: "context_actions",
       elements: [

@@ -1,6 +1,5 @@
 export { isBoundaryRefusal, refusalDelivery, postThenAckRunDelivery, refusalNote } from "./refusals.ts";
 export { inlineCode, clip, sleep } from "./util.ts";
-export { deriveThreadTitle, setThreadTitle } from "./thread-title.ts";
 export {
   decodeSlackEntities,
   resolveMentionsInText,

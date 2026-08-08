@@ -108,6 +108,27 @@ test("task presenter attaches beneath an existing ack and retries terminal updat
   ]);
 });
 
+test("task presenter decorates the complete terminal surface", async () => {
+  let finalBlocks: Array<Record<string, any>> = [];
+  const presenter = createTaskListPresenter({
+    post: async () => "171.3",
+    update: async (_ts, text, blocks) => {
+      if (text === "Final") finalBlocks = blocks;
+    },
+    checkpoint: async () => {},
+    remove: async () => {},
+    onSurfacePosted: () => {},
+  });
+  await presenter.onTasks([{ id: "a", title: "consult", status: "completed" }]);
+  assert.equal(
+    await presenter.finalize("Final", (blocks) => [...blocks, { type: "context_actions" }]),
+    true,
+  );
+  assert.equal(finalBlocks[0]?.text?.text, "Final");
+  assert.match(finalBlocks[1]?.text?.text ?? "", /consult/);
+  assert.equal(finalBlocks[2]?.type, "context_actions");
+});
+
 test("task presenter merges a late ack into the existing task message", async () => {
   const calls: string[] = [];
   const presenter = createTaskListPresenter({

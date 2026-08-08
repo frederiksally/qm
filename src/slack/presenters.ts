@@ -181,7 +181,10 @@ export interface TaskListPresenter {
   attach(ts: string, leadText: string): Promise<void>;
   addLead(leadText: string): Promise<boolean>;
   onTasks(tasks: RunTaskView[]): Promise<void>;
-  finalize(text: string): Promise<boolean>;
+  finalize(
+    text: string,
+    decorate?: (blocks: Array<Record<string, unknown>>) => Array<Record<string, unknown>>,
+  ): Promise<boolean>;
   settle(): Promise<void>;
 }
 
@@ -272,11 +275,14 @@ export function createTaskListPresenter(deps: {
       });
       await chain;
     },
-    async finalize(text) {
+    async finalize(text, decorate = (blocks) => blocks) {
       await chain;
       if (!messageTs || !tasks.length) return false;
       const taskText = renderTaskList(tasks);
-      const finalBlocks = [...slackSectionBlocks(text), { type: "section", text: { type: "mrkdwn", text: taskText } }];
+      const finalBlocks = decorate([
+        ...slackSectionBlocks(text),
+        { type: "section", text: { type: "mrkdwn", text: taskText } },
+      ]);
       return updateWithRetry(messageTs, text || taskText, finalBlocks);
     },
     async settle() {

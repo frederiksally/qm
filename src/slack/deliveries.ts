@@ -12,7 +12,6 @@ import {
   renderTaskList,
   slackReplyArgs,
   slackSectionBlocks,
-  setThreadTitle,
   stripReactionDirectives,
   toSlackMrkdwn,
   uploadAttachments,
@@ -25,7 +24,7 @@ import type { Delivery } from "../types.ts";
 import type { CoreBridge } from "./core-bridge.ts";
 import type { Mirror } from "./mirror.ts";
 import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
-import { feedbackBlocks } from "./feedback.ts";
+import { withFeedbackControls } from "./feedback.ts";
 
 const DELIVERY_CLAIM_MS = 15_000;
 
@@ -139,7 +138,7 @@ export function createDeliveryPoller(deps: {
                   : []),
               ];
             const surfaceBlocks = runId
-              ? [...(taskListBlocks ?? slackSectionBlocks(text)), ...feedbackBlocks(runId)]
+              ? withFeedbackControls(taskListBlocks ?? slackSectionBlocks(text), runId)
               : taskListBlocks;
             if (!text.trim()) {
               if (taskList) {
@@ -165,15 +164,13 @@ export function createDeliveryPoller(deps: {
                     blocks: [{ type: "section", text: { type: "mrkdwn", text: taskList } }],
                   });
                   mirrorSelfPost(channel, posted?.ts, taskList, { sub: threadTs });
-                  if (!threadTs && channel.startsWith("D") && posted?.ts)
-                    await setThreadTitle(client, channel, String(posted.ts), taskList);
                 }
               } else if (d.destination.editRef) {
                 await client.chat
                   .delete({ channel, ts: d.destination.editRef })
                   .catch(swallowAs("slack: delete status placeholder", undefined));
               }
-              await replayAttachments(d.destination.stream?.ts ?? threadTs ?? d.destination.editRef);
+              await replayAttachments(threadTs);
               if (d.attachments?.length && threadTs) threads.mark(channel, threadTs, true);
               return undefined;
             }
@@ -190,7 +187,7 @@ export function createDeliveryPoller(deps: {
                 ...botIdentityArgs(),
               });
               mirrorSelfPost(stream.channel, stream.ts, text, { sub: threadTs, editedAt: Date.now() });
-              await replayAttachments(stream.ts);
+              await replayAttachments(threadTs);
               return undefined;
             }
             if (d.destination.editRef) {
@@ -206,7 +203,7 @@ export function createDeliveryPoller(deps: {
                 });
                 if (threadTs) threads.mark(channel, threadTs, true);
                 mirrorSelfPost(channel, d.destination.editRef, text, { sub: threadTs, editedAt: Date.now() });
-                await replayAttachments(threadTs ?? d.destination.editRef);
+                await replayAttachments(threadTs);
                 return undefined;
               } catch (e) {
                 swallow("slack: finalize recovered reply in place", e);
@@ -234,12 +231,9 @@ export function createDeliveryPoller(deps: {
                   }
                 : undefined,
             );
-            const root = threadTs ?? (res?.ts ? String(res.ts) : undefined);
-            if (root) threads.mark(channel, root, true);
-            if (!threadTs && channel.startsWith("D") && res?.ts)
-              await setThreadTitle(client, channel, String(res.ts), text);
+            if (threadTs) threads.mark(channel, threadTs, true);
             if (!d.destination.identity) mirrorSelfPost(channel, res?.ts, text, { sub: threadTs });
-            await replayAttachments(root);
+            await replayAttachments(threadTs);
             return undefined;
           } finally {
             slackApiMs = Math.round(performance.now() - tPost);
@@ -268,7 +262,6 @@ export function createDeliveryPoller(deps: {
                 slackReplyArgs(channel, text, undefined, { unfurlLinks: d.destination.unfurlLinks }),
               );
               mirrorSelfPost(channel, posted?.ts, text, { kind: "dm" });
-              if (posted?.ts) await setThreadTitle(client, channel, String(posted.ts), text);
             }
             if (d.attachments?.length) {
               try {

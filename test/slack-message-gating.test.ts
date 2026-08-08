@@ -83,8 +83,9 @@ test("hasContent is true with text OR with files, false when truly empty (scenar
   assert.equal(hasContent("   ", []), false);
 });
 
-test("dmThreadRef gives every thread in a DM one continuous session", () => {
+test("dmThreadRef separates top-level chat from explicit DM threads", () => {
   assert.equal(dmThreadRef("D1"), "dm:D1");
+  assert.equal(dmThreadRef("D1", "100.1"), "dm:D1:100.1");
 });
 
 test("mentionsBot detects the bot @mention so thread-follow leaves those to app_mention", () => {

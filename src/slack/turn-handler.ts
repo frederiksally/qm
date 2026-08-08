@@ -39,7 +39,6 @@ import {
   renderConversationView,
   resolveReactionTargets,
   shouldSurfaceReaction,
-  setThreadTitle,
   slackReplyArgs,
   slackSectionBlocks,
   stripMention,
@@ -59,7 +58,7 @@ import type { Approvals } from "./approvals.ts";
 import type { AckEmojiPicker } from "./ack-emoji.ts";
 import type { SlackActivityStep } from "./activity-steps.ts";
 import { createStreamPresenter, type StreamPresenter } from "./stream-presenter.ts";
-import { feedbackBlocks } from "./feedback.ts";
+import { withFeedbackControls } from "./feedback.ts";
 import {
   type SlackConversationKind,
   applyAndLogReactions,
@@ -220,12 +219,25 @@ export function createTurnHandler(deps: {
     let slackIdsByPrincipal: Map<string, string> | undefined;
     let conversationKind: SlackConversationKind = inc.kind;
     let allowedTs: Set<string> = new Set();
+    let primaryReplyTs: string | undefined;
     const postReply = async (msg: string, blocks?: Array<Record<string, unknown>>): Promise<string | undefined> => {
-      const posted = await client.chat.postMessage({
+      if (queuedRunId && primaryReplyTs) {
+        await updateSlackMessage(client, inc.channel, primaryReplyTs, msg, blocks);
+        mirrorSelfPost(inc.channel, primaryReplyTs, msg, {
+          sub: replyThreadTs,
+          editedAt: Date.now(),
+        });
+        return primaryReplyTs;
+      }
+      const body = {
         ...slackReplyArgs(inc.channel, msg, replyThreadTs, { threadOnly: inc.kind === "channel", unfurlLinks: false }),
         ...(blocks ? { blocks } : {}),
-      });
+      };
+      const posted = queuedRunId
+        ? await postWithVerify(client, body, `run:${queuedRunId}`)
+        : await client.chat.postMessage(body);
       const ts = posted.ts as string | undefined;
+      if (queuedRunId && ts) primaryReplyTs = ts;
       mirrorSelfPost(inc.channel, ts, msg, { sub: replyThreadTs });
       if (queuedRunId && ts)
         await checkpointRunDeliveryState(queuedRunId, {
@@ -246,8 +258,9 @@ export function createTurnHandler(deps: {
     };
 
     if (inc.kind === "dm") {
-      threadRef = dmThreadRef(inc.channel);
-      replyThreadTs = inc.threadTs ?? inc.ts;
+      threadRef = dmThreadRef(inc.channel, inc.threadTs);
+      replyThreadTs = inc.threadTs;
+      deliveryThreadTs = inc.threadTs;
       if (!actor.isBot && !actor.isExternalGuest)
         deps.ensureHeader?.(client, inc.channel, `personal:${actor.externalId}`, "dm");
     } else {
@@ -297,7 +310,7 @@ export function createTurnHandler(deps: {
       });
     };
     const updateBusyStatus = (steps: SlackActivityStep[]): void => {
-      if (inc.kind !== "dm") return;
+      if (inc.kind !== "dm" || !replyThreadTs) return;
       const current = [...steps]
         .reverse()
         .find((step) => step.state === "in_progress" || step.state === "waiting_approval" || step.state === "pending");
@@ -316,6 +329,7 @@ export function createTurnHandler(deps: {
         await client.reactions.add({ channel: inc.channel, timestamp: inc.ts, name });
         return;
       }
+      if (!replyThreadTs) return;
       await sendStatus();
       if (!statusRefresh) {
         statusRefresh = setInterval(() => void sendStatus().catch(() => {}), 90_000);
@@ -327,6 +341,7 @@ export function createTurnHandler(deps: {
         await client.reactions.remove({ channel: inc.channel, timestamp: inc.ts, name });
         return;
       }
+      if (!replyThreadTs) return;
       if (statusUpdate) clearTimeout(statusUpdate);
       statusUpdate = undefined;
       if (!statusShown) return;
@@ -428,8 +443,7 @@ export function createTurnHandler(deps: {
       return;
     }
     ack?.activate();
-    if (inc.kind === "dm" && !inc.threadTs) await setThreadTitle(client, inc.channel, inc.ts, text);
-    if (inc.kind === "dm" && !inc.unprompted) {
+    if (inc.kind === "dm" && inc.threadTs && !inc.unprompted) {
       streamPresenter = createStreamPresenter({
         create: () =>
           client.chatStream({ channel: inc.channel, thread_ts: replyThreadTs, buffer_size: 64 }),
@@ -653,7 +667,9 @@ export function createTurnHandler(deps: {
           postText = [postText, uploadFailureNote(err)].filter(Boolean).join("\n\n");
         }
       }
-      let finalBlocks = queuedRunId ? feedbackBlocks(queuedRunId) : undefined;
+      let finalBlocks = queuedRunId
+        ? withFeedbackControls(slackSectionBlocks(postText), queuedRunId)
+        : undefined;
       const inlineDmApprovals = inc.kind === "dm" && Boolean(result.pendingApprovals?.length);
       if (inlineDmApprovals) {
         const pending = result.pendingApprovals ?? [];
@@ -681,13 +697,17 @@ export function createTurnHandler(deps: {
       }
       const tDeliverStart = performance.now();
       let finalizedTaskList = false;
+      const feedbackRunId = queuedRunId;
+      const decorateTaskList = feedbackRunId
+        ? (blocks: Array<Record<string, unknown>>) => withFeedbackControls(blocks, feedbackRunId)
+        : undefined;
       if (result.attachments?.length) {
         await settleAck();
-        if (postText) finalizedTaskList = (await taskList?.finalize(postText)) ?? false;
+        if (postText) finalizedTaskList = (await taskList?.finalize(postText, decorateTaskList)) ?? false;
         if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, finalBlocks);
       } else {
         await settleAck();
-        if (postText) finalizedTaskList = (await taskList?.finalize(postText)) ?? false;
+        if (postText) finalizedTaskList = (await taskList?.finalize(postText, decorateTaskList)) ?? false;
         if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, finalBlocks);
       }
       if (queuedRunId) {
@@ -779,22 +799,10 @@ export function createTurnHandler(deps: {
       if (delivery === "thread") {
         if (queuedRunId) {
           const runId = queuedRunId;
-          const text = refusalText;
-          const post = async () => {
-            const posted = await postWithVerify(
-              client,
-              {
-                ...slackReplyArgs(inc.channel, text, replyThreadTs, {
-                  threadOnly: inc.kind === "channel",
-                  unfurlLinks: false,
-                }),
-              },
-              `run:${runId}`,
-            );
-            mirrorSelfPost(inc.channel, posted.ts, text, { sub: replyThreadTs });
-          };
           await postThenAckRunDelivery({
-            post,
+            post: async () => {
+              await postReply(refusalText);
+            },
             ack: () => ackRunDeliveryWithRetry(runId),
             release: () => inFlightRuns.delete(runId),
           });

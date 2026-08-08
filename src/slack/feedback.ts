@@ -2,8 +2,12 @@ import type { SlackCoreClient } from "../api/slack-core-client.ts";
 
 export const FEEDBACK_ACTION_ID = "qm_feedback";
 
-export function feedbackBlocks(runId: string): Array<Record<string, unknown>> {
+export function withFeedbackControls(
+  content: Array<Record<string, unknown>>,
+  runId: string,
+): Array<Record<string, unknown>> {
   return [
+    ...content,
     {
       type: "context_actions",
       elements: [

@@ -283,6 +283,12 @@ class FakeCore implements SlackCoreClient {
   emitDelta(delta: string): void {
     this.runHooks?.onDelta?.(delta);
   }
+  emitActivity(steps: any[]): void {
+    this.runHooks?.onActivity?.(steps);
+  }
+  emitFirstBlock(text: string): void {
+    this.runHooks?.onFirstBlock?.(text);
+  }
   /** Enqueue `runId` on the first submit and hold waitRun open; every later submit is a
    *  mid-turn STEER answered with that same live run's id. `finishRun` releases the waiters. */
   holdRun(runId: string): void {
@@ -424,7 +430,7 @@ test("a mid-turn message that STEERS the live run does not post the reply twice"
   }
 });
 
-test("a DM becomes one scoped live turn and one Slack reply", async () => {
+test("a top-level DM stays in chat without creating or titling a thread", async () => {
   const f = await fixture();
   try {
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" });
@@ -443,16 +449,14 @@ test("a DM becomes one scoped live turn and one Slack reply", async () => {
       f.client.posts.map((p) => p.text),
       ["agent reply"],
     );
-    assert.equal(f.client.posts.find((p) => p.text === "agent reply")?.thread_ts, "100.1");
-    assert.deepEqual(f.client.titles, [
-      { channel_id: "D1", thread_ts: "100.1", title: "hello agent" },
-    ]);
+    assert.equal(f.client.posts.find((p) => p.text === "agent reply")?.thread_ts, undefined);
+    assert.deepEqual(f.client.titles, []);
   } finally {
     await f.stop();
   }
 });
 
-test("DM thread replies preserve channel-scoped session and delivery identity", async () => {
+test("DM thread replies preserve channel-scoped session and thread-scoped delivery", async () => {
   const f = await fixture();
   try {
     await f.app.emitMessage({
@@ -463,8 +467,8 @@ test("DM thread replies preserve channel-scoped session and delivery identity", 
       ts: "100.2",
       thread_ts: "100.1",
     });
-    assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1");
-    assert.equal(f.core.turns[0].deliveryTarget, "D1");
+    assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1:100.1");
+    assert.equal(f.core.turns[0].deliveryTarget, "D1:100.1");
     assert.equal(f.client.posts.find((p) => p.text === "agent reply")?.thread_ts, "100.1");
     assert.deepEqual(f.client.titles, []);
   } finally {
@@ -472,41 +476,129 @@ test("DM thread replies preserve channel-scoped session and delivery identity", 
   }
 });
 
-test("a long DM turn uses native status and clears it on completion", async () => {
+test("top-level and threaded DMs use different run routing keys", async () => {
+  const top = await fixture();
+  const thread = await fixture();
+  try {
+    await top.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "top", ts: "100.1" });
+    await thread.app.emitMessage({
+      channel: "D1",
+      channel_type: "im",
+      user: "U1",
+      text: "thread",
+      ts: "100.2",
+      thread_ts: "100.1",
+    });
+    assert.notEqual(top.core.turns[0].conversation.threadRef, thread.core.turns[0].conversation.threadRef);
+  } finally {
+    await Promise.all([top.stop(), thread.stop()]);
+  }
+});
+
+test("a queued acknowledgment is updated into the terminal answer", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const event = { channel: "C1", channel_type: "channel", user: "U1", text: "<@UBOT> work", ts: "100.25" };
+    f.client.messagesByChannel.set("C1", [event]);
+    const turn = f.app.emitEvent("app_mention", event);
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.emitFirstBlock("I’ll take a look.");
+    await waitFor(() => f.client.posts.length === 1);
+    f.core.finishRun({ status: "ok", reply: "Finished." });
+    await turn;
+    assert.equal(f.client.posts.length, 1);
+    assert.equal(f.client.posts[0]?.metadata?.event_payload?.idempotency_key, "run:R1");
+    assert.equal(f.client.updates.filter((update) => update.text === "Finished.").length, 1);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a queued acknowledgment is updated into a refusal", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const event = { channel: "C1", channel_type: "channel", user: "U1", text: "<@UBOT> work", ts: "100.26" };
+    f.client.messagesByChannel.set("C1", [event]);
+    const turn = f.app.emitEvent("app_mention", event);
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.emitFirstBlock("I’ll take a look.");
+    await waitFor(() => f.client.posts.length === 1);
+    f.core.finishRun({ status: "refused", reason: "Not allowed." });
+    await turn;
+    assert.equal(f.client.posts.length, 1);
+    assert.equal(f.client.posts[0]?.metadata?.event_payload?.idempotency_key, "run:R1");
+    assert.equal(f.client.updates.filter((update) => String(update.text).includes("Not allowed.")).length, 1);
+    assert.deepEqual(f.core.ackedRuns, ["R1"]);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a long top-level DM does not create a thread for native status", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
     const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "work", ts: "100.3" });
     await waitFor(() => f.core.polled.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 2_100));
-    assert.deepEqual(f.client.statuses, [
-      { channel_id: "D1", thread_ts: "100.3", status: "Thinking…" },
-    ]);
+    assert.deepEqual(f.client.statuses, []);
     f.core.finishRun({ status: "ok", reply: "done" });
     await turn;
-    assert.deepEqual(f.client.statuses.at(-1), { channel_id: "D1", thread_ts: "100.3", status: "" });
+    assert.deepEqual(f.client.statuses, []);
     assert.deepEqual(f.client.reactionsAdded, []);
   } finally {
     await f.stop();
   }
 });
 
-test("a queued DM streams once, checkpoints, and finalizes the same message", async () => {
+test("a queued DM thread reply streams once, checkpoints, and finalizes the same message", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
-    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "stream", ts: "100.4" });
+    const turn = f.app.emitMessage({
+      channel: "D1",
+      channel_type: "im",
+      user: "U1",
+      text: "stream",
+      ts: "100.4",
+      thread_ts: "100.1",
+    });
     await waitFor(() => f.core.polled.length === 1);
     f.core.emitDelta("**short** <@U2> answer");
     await waitFor(() => f.client.streamAppends.length === 1);
+    assert.equal(f.client.streamAppends[0]?.args.thread_ts, "100.1");
     assert.equal(f.client.streamAppends[0]?.body.markdown_text, "**short** &lt;@U2&gt; answer");
     f.core.finishRun({ status: "ok", reply: "**short** <@U2> answer" });
     await turn;
     assert.deepEqual(f.core.editRefs, [{ runId: "R1", editRef: "stream-1" }]);
     assert.equal(f.client.streamStops.length, 1);
     assert.equal(f.client.posts.filter((post) => post.text.includes("short")).length, 0);
-    assert.equal(f.client.updates.filter((update) => update.text === "*short* <@U2> answer").length, 1);
+    const update = f.client.updates.find((candidate) => candidate.text === "*short* <@U2> answer");
+    assert.equal(update?.blocks?.[0]?.type, "section");
+    assert.equal(update?.blocks?.[0]?.text?.text, "*short* <@U2> answer");
+    assert.ok(update?.blocks?.some((block: any) => block.type === "context_actions"));
     assert.deepEqual(f.core.ackedRuns, ["R1"]);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("top-level DM activity stays transient and only the final answer is posted", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "research", ts: "100.45" });
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.emitActivity([{ id: "tool-1", title: "Looking up relevant context", state: "in_progress" }]);
+    f.core.finishRun({ status: "ok", reply: "Here is the result." });
+    await turn;
+    assert.equal(f.client.streamAppends.length, 0);
+    assert.equal(f.client.posts.filter((post) => post.text === "Here is the result.").length, 1);
+    assert.equal(f.client.posts.find((post) => post.text === "Here is the result.")?.thread_ts, undefined);
+    assert.deepEqual(f.client.titles, []);
+    assert.deepEqual(f.client.statuses, []);
   } finally {
     await f.stop();
   }
@@ -521,18 +613,28 @@ test("a queued DM with no deltas posts feedback and only then acknowledges recov
     f.core.finishRun({ status: "ok", reply: "cached answer" });
     await turn;
     const reply = f.client.posts.find((post) => post.text === "cached answer");
+    assert.equal(reply?.blocks?.[0]?.type, "section");
+    assert.equal(reply?.blocks?.[0]?.text?.text, "cached answer");
     assert.ok(reply?.blocks?.some((block: any) => block.type === "context_actions"));
+    assert.equal(reply?.metadata?.event_payload?.idempotency_key, "run:R1");
     assert.deepEqual(f.core.ackedRuns, ["R1"]);
   } finally {
     await f.stop();
   }
 });
 
-test("a late DM approval reconciles its opened stream with buttons and no second post", async () => {
+test("a late DM thread approval reconciles its opened stream with buttons and no second post", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
-    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "run it", ts: "100.6" });
+    const turn = f.app.emitMessage({
+      channel: "D1",
+      channel_type: "im",
+      user: "U1",
+      text: "run it",
+      ts: "100.6",
+      thread_ts: "100.1",
+    });
     await waitFor(() => f.core.polled.length === 1);
     f.core.emitDelta("I need to check this.");
     await waitFor(() => f.client.streamAppends.length === 1);
