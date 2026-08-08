@@ -575,7 +575,10 @@ test("a queued DM thread reply streams once, checkpoints, and finalizes the same
     assert.deepEqual(f.core.editRefs, [{ runId: "R1", editRef: "stream-1" }]);
     assert.equal(f.client.streamStops.length, 1);
     assert.equal(f.client.posts.filter((post) => post.text.includes("short")).length, 0);
-    assert.equal(f.client.updates.filter((update) => update.text === "*short* <@U2> answer").length, 1);
+    const update = f.client.updates.find((candidate) => candidate.text === "*short* <@U2> answer");
+    assert.equal(update?.blocks?.[0]?.type, "section");
+    assert.equal(update?.blocks?.[0]?.text?.text, "*short* <@U2> answer");
+    assert.ok(update?.blocks?.some((block: any) => block.type === "context_actions"));
     assert.deepEqual(f.core.ackedRuns, ["R1"]);
   } finally {
     await f.stop();
@@ -610,6 +613,8 @@ test("a queued DM with no deltas posts feedback and only then acknowledges recov
     f.core.finishRun({ status: "ok", reply: "cached answer" });
     await turn;
     const reply = f.client.posts.find((post) => post.text === "cached answer");
+    assert.equal(reply?.blocks?.[0]?.type, "section");
+    assert.equal(reply?.blocks?.[0]?.text?.text, "cached answer");
     assert.ok(reply?.blocks?.some((block: any) => block.type === "context_actions"));
     assert.equal(reply?.metadata?.event_payload?.idempotency_key, "run:R1");
     assert.deepEqual(f.core.ackedRuns, ["R1"]);

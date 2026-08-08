@@ -24,7 +24,7 @@ import type { Delivery } from "../types.ts";
 import type { CoreBridge } from "./core-bridge.ts";
 import type { Mirror } from "./mirror.ts";
 import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
-import { feedbackBlocks } from "./feedback.ts";
+import { withFeedbackControls } from "./feedback.ts";
 
 const DELIVERY_CLAIM_MS = 15_000;
 
@@ -138,7 +138,7 @@ export function createDeliveryPoller(deps: {
                   : []),
               ];
             const surfaceBlocks = runId
-              ? [...(taskListBlocks ?? slackSectionBlocks(text)), ...feedbackBlocks(runId)]
+              ? withFeedbackControls(taskListBlocks ?? slackSectionBlocks(text), runId)
               : taskListBlocks;
             if (!text.trim()) {
               if (taskList) {

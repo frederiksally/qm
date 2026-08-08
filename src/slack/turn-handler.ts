@@ -58,7 +58,7 @@ import type { Approvals } from "./approvals.ts";
 import type { AckEmojiPicker } from "./ack-emoji.ts";
 import type { SlackActivityStep } from "./activity-steps.ts";
 import { createStreamPresenter, type StreamPresenter } from "./stream-presenter.ts";
-import { feedbackBlocks } from "./feedback.ts";
+import { withFeedbackControls } from "./feedback.ts";
 import {
   type SlackConversationKind,
   applyAndLogReactions,
@@ -667,7 +667,9 @@ export function createTurnHandler(deps: {
           postText = [postText, uploadFailureNote(err)].filter(Boolean).join("\n\n");
         }
       }
-      let finalBlocks = queuedRunId ? feedbackBlocks(queuedRunId) : undefined;
+      let finalBlocks = queuedRunId
+        ? withFeedbackControls(slackSectionBlocks(postText), queuedRunId)
+        : undefined;
       const inlineDmApprovals = inc.kind === "dm" && Boolean(result.pendingApprovals?.length);
       if (inlineDmApprovals) {
         const pending = result.pendingApprovals ?? [];
@@ -695,13 +697,17 @@ export function createTurnHandler(deps: {
       }
       const tDeliverStart = performance.now();
       let finalizedTaskList = false;
+      const feedbackRunId = queuedRunId;
+      const decorateTaskList = feedbackRunId
+        ? (blocks: Array<Record<string, unknown>>) => withFeedbackControls(blocks, feedbackRunId)
+        : undefined;
       if (result.attachments?.length) {
         await settleAck();
-        if (postText) finalizedTaskList = (await taskList?.finalize(postText)) ?? false;
+        if (postText) finalizedTaskList = (await taskList?.finalize(postText, decorateTaskList)) ?? false;
         if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, finalBlocks);
       } else {
         await settleAck();
-        if (postText) finalizedTaskList = (await taskList?.finalize(postText)) ?? false;
+        if (postText) finalizedTaskList = (await taskList?.finalize(postText, decorateTaskList)) ?? false;
         if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, finalBlocks);
       }
       if (queuedRunId) {
