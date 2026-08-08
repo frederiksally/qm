@@ -34,23 +34,59 @@ const REFRESH_ACTIVE_THREADS = "REFRESH MATERIALIZED VIEW surface_active_threads
 
 export function createPostgresSurfaceCache(
   connectionString: string,
-  opts: { liveFallback?: LiveFallback } = {},
+  opts: { liveFallback?: LiveFallback; now?: () => number } = {},
 ): SurfaceCache {
   const orgId = configOrgId();
   const { q, query, pool, close } = createPgPool(connectionString, [
+    `CREATE SEQUENCE IF NOT EXISTS channel_messages_updated_seq`,
     `CREATE TABLE IF NOT EXISTS channel_messages(
         org_id TEXT NOT NULL, container TEXT NOT NULL, ts TEXT NOT NULL,
         sub TEXT, author_id TEXT, author_name TEXT, text TEXT NOT NULL DEFAULT '', mentions JSONB,
         self BOOLEAN NOT NULL DEFAULT FALSE, bot BOOLEAN NOT NULL DEFAULT FALSE,
         mentions_self BOOLEAN NOT NULL DEFAULT FALSE,
         edited_at BIGINT, deleted BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at BIGINT NOT NULL,
+        created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL DEFAULT nextval('channel_messages_updated_seq'),
         PRIMARY KEY(org_id, container, ts)
       )`,
     `ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS mentions JSONB`,
     `ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS bot BOOLEAN NOT NULL DEFAULT FALSE`,
     `ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS mentions_self BOOLEAN NOT NULL DEFAULT FALSE`,
     `ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS handled BOOLEAN NOT NULL DEFAULT FALSE`,
+    `CREATE OR REPLACE FUNCTION channel_messages_track_mutation() RETURNS trigger AS $$
+       BEGIN
+         PERFORM pg_advisory_xact_lock(hashtext('channel_messages:mutation'));
+         IF TG_OP = 'INSERT' THEN
+           NEW.updated_at := nextval('channel_messages_updated_seq');
+         ELSIF ROW(
+           NEW.sub, NEW.author_id, NEW.author_name, NEW.text, NEW.mentions,
+           NEW.self, NEW.bot, NEW.mentions_self, COALESCE(NEW.edited_at, 0), NEW.deleted
+         ) IS DISTINCT FROM ROW(
+           OLD.sub, OLD.author_id, OLD.author_name, OLD.text, OLD.mentions,
+           OLD.self, OLD.bot, OLD.mentions_self, COALESCE(OLD.edited_at, 0), OLD.deleted
+         ) THEN
+           NEW.updated_at := nextval('channel_messages_updated_seq');
+         ELSE
+           NEW.updated_at := OLD.updated_at;
+         END IF;
+         RETURN NEW;
+       END;
+     $$ LANGUAGE plpgsql`,
+    `DO $migration$
+       BEGIN
+         ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+         ALTER TABLE channel_messages ALTER COLUMN updated_at SET DEFAULT nextval('channel_messages_updated_seq');
+         UPDATE channel_messages SET updated_at = nextval('channel_messages_updated_seq') WHERE updated_at IS NULL;
+         ALTER TABLE channel_messages ALTER COLUMN updated_at SET NOT NULL;
+         IF NOT EXISTS (
+           SELECT 1 FROM pg_trigger
+           WHERE tgname = 'channel_messages_track_mutation' AND tgrelid = 'channel_messages'::regclass
+         ) THEN
+           CREATE TRIGGER channel_messages_track_mutation
+             BEFORE INSERT OR UPDATE ON channel_messages
+             FOR EACH ROW EXECUTE FUNCTION channel_messages_track_mutation();
+         END IF;
+       END;
+     $migration$`,
     `CREATE INDEX IF NOT EXISTS channel_messages_by_container
         ON channel_messages(org_id, container, ts)`,
     `CREATE INDEX IF NOT EXISTS channel_messages_live_by_container
@@ -105,7 +141,7 @@ export function createPostgresSurfaceCache(
   return {
     async ingest(events) {
       if (!events.length) return { upserted: 0 };
-      const now = Date.now();
+      const now = (opts.now ?? Date.now)();
       const client = await (await pool()).connect();
       let upserted = 0;
       try {
@@ -185,12 +221,23 @@ export function createPostgresSurfaceCache(
     },
 
     async markHandled(container, ts) {
-      await q(
-        `INSERT INTO channel_messages(org_id, container, ts, created_at, handled)
-         VALUES ($1,$2,$3,$4,TRUE)
-         ON CONFLICT (org_id, container, ts) DO UPDATE SET handled = TRUE`,
-        [orgId, container, ts, Date.now()],
-      );
+      const now = (opts.now ?? Date.now)();
+      const client = await (await pool()).connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          `INSERT INTO channel_messages(org_id, container, ts, created_at, handled)
+           VALUES ($1,$2,$3,$4,TRUE)
+           ON CONFLICT (org_id, container, ts) DO UPDATE SET handled = TRUE`,
+          [orgId, container, ts, now],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     async readMessages(container, opts = {}) {
