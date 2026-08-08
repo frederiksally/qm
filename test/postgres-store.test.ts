@@ -966,6 +966,14 @@ test("pg run store: delivery state round-trips; onTerminal fires once with it", 
     assert.equal(await runs.setDeliveryState("missing", null, { editRef: "1.2" }), false);
     assert.equal(await runs.setDeliveryState(r.id, null, { editRef: "171.002" }), true);
     assert.equal((await runs.get(r.id))?.deliveryState?.editRef, "171.002");
+    assert.equal(
+      await runs.setDeliveryState(r.id, null, { surface: { kind: "stream", channel: "D1", ts: "171.003" } }),
+      true,
+    );
+    assert.deepEqual((await runs.get(r.id))?.deliveryState, {
+      editRef: "171.002",
+      surface: { kind: "stream", channel: "D1", ts: "171.003" },
+    });
 
     const seen: string[] = [];
     runs.onTerminal((run) => seen.push(`${run.id}:${run.status}:${run.deliveryState?.editRef ?? ""}`));
