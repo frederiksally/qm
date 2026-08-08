@@ -18,31 +18,94 @@ before(async () => {
 });
 
 test("pg surface-cache: upsert idempotency + last-writer-wins on change-time", { skip }, async () => {
-  const cache = createPostgresSurfaceCache(URL!);
+  let now = 10;
+  const cache = createPostgresSurfaceCache(URL!, { now: () => now });
+  const mutationTime = async (ts = "1.0"): Promise<number> => {
+    const pg = (await import("pg")).default;
+    const pool = new pg.Pool({ connectionString: URL! });
+    try {
+      const row = await pool.query<{ updated_at: string }>(
+        `SELECT updated_at::text FROM channel_messages WHERE container = 'C1' AND ts = $1`,
+        [ts],
+      );
+      return Number(row.rows[0]!.updated_at);
+    } finally {
+      await pool.end();
+    }
+  };
   try {
     await cache.ingest([{ container: "C1", ts: "1.0", authorId: "U1", text: "original", createdAt: 1 }]);
+    const insertedAt = await mutationTime();
+    now = 20;
     await cache.ingest([{ container: "C1", ts: "1.0", authorId: "U1", text: "original", createdAt: 1 }]);
+    assert.equal(await mutationTime(), insertedAt, "an unchanged redelivery does not look like a source mutation");
     let msgs = await cache.readMessages("C1");
     assert.equal(msgs.length, 1, "the same ts stays one row");
+    now = 30;
     await cache.ingest([{ container: "C1", ts: "1.0", text: "edited", editedAt: 5, createdAt: 1 }]);
+    const editedAt = await mutationTime();
+    assert.ok(editedAt > insertedAt, "an edit advances the source mutation cursor");
     msgs = await cache.readMessages("C1");
     assert.equal(msgs[0]!.text, "edited", "the edit wins");
+    now = 40;
     await cache.ingest([{ container: "C1", ts: "1.0", text: "original", createdAt: 1 }]);
+    assert.equal(await mutationTime(), editedAt, "a stale original does not advance the source mutation cursor");
     msgs = await cache.readMessages("C1");
     assert.equal(msgs[0]!.text, "edited", "a stale original does not clobber the newer edit");
+    now = 50;
+    await cache.ingest([{ container: "C1", ts: "1.0", deleted: true, createdAt: 1 }]);
+    assert.ok(await mutationTime() > editedAt, "a deletion advances the source mutation cursor");
+
+    await cache.ingest([{ container: "C1", ts: "2.0", authorId: "U1", text: "first", createdAt: 2 }]);
+    const equalVersionAt = await mutationTime("2.0");
+    await cache.ingest([{ container: "C1", ts: "2.0", authorId: "U1", text: "corrected", createdAt: 2 }]);
+    const secondRow = await cache.readMessages("C1");
+    assert.equal(secondRow.find((message) => message.ts === "2.0")!.text, "corrected");
+    assert.ok(await mutationTime("2.0") > equalVersionAt, "an accepted equal-version payload change advances the cursor");
   } finally {
     await cache.close();
   }
 });
 
+test("pg surface-cache: opposing multi-container batches serialize without deadlock", { skip }, async () => {
+  const first = createPostgresSurfaceCache(URL!);
+  const second = createPostgresSurfaceCache(URL!);
+  try {
+    await Promise.all([
+      first.ingest([
+        { container: "LOCK1", ts: "1.0", text: "one", createdAt: 1 },
+        { container: "LOCK2", ts: "1.0", text: "two", createdAt: 1 },
+      ]),
+      second.ingest([
+        { container: "LOCK2", ts: "2.0", text: "three", createdAt: 2 },
+        { container: "LOCK1", ts: "2.0", text: "four", createdAt: 2 },
+      ]),
+    ]);
+    assert.equal((await first.readMessages("LOCK1", { noFallback: true })).length, 2);
+    assert.equal((await first.readMessages("LOCK2", { noFallback: true })).length, 2);
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});
+
 test("pg surface-cache: markHandled sets + survives a later ingest (edit) of the same ts", { skip }, async () => {
   const cache = createPostgresSurfaceCache(URL!);
+  let cursorPool: import("pg").Pool | null = null;
   try {
     await cache.markHandled("CH1", "9.0");
+    const pg = (await import("pg")).default;
+    cursorPool = new pg.Pool({ connectionString: URL! });
+    const activeCursorPool = cursorPool;
+    const cursor = async () => Number((await activeCursorPool.query<{ updated_at: string }>(
+      `SELECT updated_at::text FROM channel_messages WHERE container = 'CH1' AND ts = '9.0'`,
+    )).rows[0]!.updated_at);
+    const placeholderCursor = await cursor();
     let msgs = await cache.readMessages("CH1", { noFallback: true });
     assert.equal(msgs[0]?.handled, true, "markHandled upserts a handled row even before ingest");
 
     await cache.ingest([{ container: "CH1", ts: "9.0", authorId: "U1", text: "the real body", createdAt: 1 }]);
+    assert.ok(await cursor() > placeholderCursor, "real content after a handled placeholder advances the mutation cursor");
     msgs = await cache.readMessages("CH1", { noFallback: true });
     assert.equal(msgs[0]!.text, "the real body", "ingest fills the body");
     assert.equal(msgs[0]!.handled, true, "ingest never clears handled");
@@ -64,6 +127,7 @@ test("pg surface-cache: markHandled sets + survives a later ingest (edit) of the
     const c3b = await cache.readMessages("CH3", { noFallback: true });
     assert.equal(c3b[0]!.handled, true, "a later plain re-ingest never clears born-handled");
   } finally {
+    await cursorPool?.end();
     await cache.close();
   }
 });
