@@ -18,6 +18,7 @@ export interface DeliveryStore {
   ackByKey(idempotencyKey: string, at: number): Promise<void>;
   setEditRefByKey(idempotencyKey: string, editRef: string): Promise<void>;
   setStreamByKey(idempotencyKey: string, stream: { channel: string; ts: string; unfinished: true }): Promise<void>;
+  completeStreamByKey(idempotencyKey: string, editRef: string): Promise<void>;
   get(id: string): Promise<Delivery | null>;
   recordRecipientThread(id: string, recipientThreadRef: string, at: number): Promise<void>;
   listByRecipientThread(recipientThreadRef: string, opts?: { limit?: number }): Promise<Delivery[]>;
@@ -108,6 +109,15 @@ export function createDeliveryStore(): DeliveryStore {
       if (!id) return;
       const d = deliveries.get(id);
       if (d && d.deliveredAt === null) d.destination = { ...d.destination, editRef: stream.ts, stream };
+    },
+    async completeStreamByKey(idempotencyKey, editRef) {
+      const id = byKey.get(idempotencyKey);
+      if (!id) return;
+      const d = deliveries.get(id);
+      if (d && d.deliveredAt === null) {
+        const { stream: _stream, ...destination } = d.destination;
+        d.destination = { ...destination, editRef, preserveMessage: true };
+      }
     },
     async get(id) {
       return deliveries.get(id) ?? null;

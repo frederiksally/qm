@@ -6,7 +6,11 @@ import { createHash } from "node:crypto";
 interface Streamer {
   readonly ts?: string;
   append(args: { markdown_text?: string; chunks?: Array<Record<string, unknown>> }): Promise<unknown>;
-  stop(args?: { chunks?: Array<Record<string, unknown>>; blocks?: Array<Record<string, unknown>> }): Promise<unknown>;
+  stop(args?: {
+    markdown_text?: string;
+    chunks?: Array<Record<string, unknown>>;
+    blocks?: Array<Record<string, unknown>>;
+  }): Promise<unknown>;
 }
 
 export interface StreamPresenter {
@@ -15,6 +19,8 @@ export interface StreamPresenter {
   finish(
     text: string,
     blocks?: Array<Record<string, unknown>>,
+    terminalStreamText?: string | null,
+    recoveryBlocks?: Array<Record<string, unknown>>,
   ): Promise<"none" | "delivered" | "recoverable" | "orphaned">;
   discard(): Promise<void>;
   failed(): boolean;
@@ -56,6 +62,7 @@ export function createStreamPresenter(deps: {
   checkpoint(ts: string): Promise<void>;
   finalize(ts: string, text: string, blocks?: Array<Record<string, unknown>>): Promise<void>;
   remove(ts: string): Promise<void>;
+  onDelivered?(ts: string, text: string): Promise<void> | void;
   onError?(error: unknown): void;
 }): StreamPresenter {
   const projector = createSlackDeltaProjector();
@@ -66,6 +73,11 @@ export function createStreamPresenter(deps: {
   let opened = false;
   let liveTextLength = 0;
   let liveTextTruncated = false;
+  let liveText = "";
+  const accepted = (text: string): string => {
+    liveText += text;
+    return text;
+  };
   const boundLiveText = (text: string): string => {
     if (!text || liveTextTruncated) return "";
     const remaining = LIVE_TEXT_LIMIT - liveTextLength;
@@ -75,7 +87,7 @@ export function createStreamPresenter(deps: {
     }
     if (text.length <= remaining) {
       liveTextLength += text.length;
-      return text;
+      return accepted(text);
     }
     let bounded = "";
     for (const char of text) {
@@ -84,7 +96,7 @@ export function createStreamPresenter(deps: {
     }
     liveTextLength += bounded.length + 1;
     liveTextTruncated = true;
-    return `${bounded}…`;
+    return accepted(`${bounded}…`);
   };
   const enqueue = (operation: () => Promise<void>): void => {
     chain = chain.then(operation).catch((error) => {
@@ -146,15 +158,34 @@ export function createStreamPresenter(deps: {
         })),
       );
     },
-    async finish(text, blocks) {
+    async finish(text, blocks, terminalStreamText = text, recoveryBlocks) {
       append(boundLiveText(projector.finish()));
       await chain;
-      if (!opened || !streamer) return "none";
-      if (failure && !streamer.ts) return "none";
-      if (streamer.ts && !(await ensureCheckpoint())) {
+      const terminalText = terminalStreamText === null ? liveText || text : terminalStreamText;
+      if (!terminalText.startsWith(liveText)) {
+        if (streamer?.ts) {
+          await streamer.stop().catch((error) => deps.onError?.(error));
+          try {
+            await deps.remove(streamer.ts);
+          } catch (error) {
+            deps.onError?.(error);
+            return "orphaned";
+          }
+        }
+        return "none";
+      }
+      const terminalRemainder = boundLiveText(terminalText.slice(liveText.length));
+      if (!opened && !terminalRemainder) return "none";
+      opened = true;
+      const active = ensure();
+      if (failure && !active.ts) return "none";
+      if (active.ts && !(await ensureCheckpoint())) {
         try {
-          await streamer.stop(blocks ? { blocks } : undefined);
-          await deps.remove(streamer.ts);
+          await active.stop({
+            ...(terminalRemainder ? { markdown_text: terminalRemainder } : {}),
+            ...(blocks ? { blocks } : {}),
+          });
+          await deps.remove(active.ts);
           return "none";
         } catch (error) {
           deps.onError?.(error);
@@ -162,22 +193,29 @@ export function createStreamPresenter(deps: {
         }
       }
       try {
-        await streamer.stop(blocks ? { blocks } : undefined);
-        if (!(await ensureCheckpoint()) && streamer.ts) return "orphaned";
-        if (!streamer.ts) return "none";
-        await deps.finalize(streamer.ts, text, blocks);
-        return "delivered";
+        await active.stop({ ...(terminalRemainder ? { markdown_text: terminalRemainder } : {}), ...(blocks ? { blocks } : {}) });
+        if (!(await ensureCheckpoint()) && active.ts) return "orphaned";
+        if (!active.ts) return "none";
       } catch (error) {
         failure ??= error;
         deps.onError?.(error);
-        if (!streamer.ts) return "none";
+        if (!active.ts) return "none";
         try {
-          await deps.finalize(streamer.ts, text, blocks);
+          await deps.finalize(active.ts, text, recoveryBlocks);
           return "delivered";
         } catch (finalizeError) {
           deps.onError?.(finalizeError);
           return "recoverable";
         }
+      }
+      const ts = active.ts;
+      if (!ts) return "none";
+      try {
+        await deps.onDelivered?.(ts, text);
+        return "delivered";
+      } catch (error) {
+        deps.onError?.(error);
+        return "recoverable";
       }
     },
     async discard() {

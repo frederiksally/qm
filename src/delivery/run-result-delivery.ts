@@ -18,13 +18,17 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
   if (!target || !surface) return null;
   const editRef = run.deliveryState?.editRef;
   const deliverySurface = run.deliveryState?.surface;
+  let streamDestination: Pick<Destination, "editRef" | "stream" | "preserveMessage"> = {};
+  if (deliverySurface?.kind === "stream" && deliverySurface.channel) {
+    streamDestination = deliverySurface.complete
+      ? { editRef: deliverySurface.ts, preserveMessage: true }
+      : { stream: { channel: deliverySurface.channel, ts: deliverySurface.ts, unfinished: true } };
+  }
   const destination: Destination = {
     type: surface,
     target,
     ...(editRef ? { editRef } : {}),
-    ...(deliverySurface?.kind === "stream" && deliverySurface.channel
-      ? { stream: { channel: deliverySurface.channel, ts: deliverySurface.ts, unfinished: true as const } }
-      : {}),
+    ...streamDestination,
     ...(run.result?.pendingApprovals?.length ? { pendingApprovals: run.result.pendingApprovals } : {}),
     ...(taskList.length ? { taskList: taskList.map(({ id, title, status }) => ({ id, title, status })) } : {}),
   };

@@ -58,7 +58,8 @@ import type { Approvals } from "./approvals.ts";
 import type { AckEmojiPicker } from "./ack-emoji.ts";
 import type { SlackActivityStep } from "./activity-steps.ts";
 import { createStreamPresenter, type StreamPresenter } from "./stream-presenter.ts";
-import { withFeedbackControls } from "./feedback.ts";
+import { feedbackControls, withFeedbackControls } from "./feedback.ts";
+import { projectSlackText } from "./stream-projector.ts";
 import {
   type SlackConversationKind,
   applyAndLogReactions,
@@ -258,9 +259,9 @@ export function createTurnHandler(deps: {
     };
 
     if (inc.kind === "dm") {
-      threadRef = dmThreadRef(inc.channel, inc.threadTs);
-      replyThreadTs = inc.threadTs;
-      deliveryThreadTs = inc.threadTs;
+      replyThreadTs = inc.threadTs ?? inc.ts;
+      deliveryThreadTs = replyThreadTs;
+      threadRef = dmThreadRef(inc.channel, replyThreadTs);
       if (!actor.isBot && !actor.isExternalGuest)
         deps.ensureHeader?.(client, inc.channel, `personal:${actor.externalId}`, "dm");
     } else {
@@ -416,7 +417,7 @@ export function createTurnHandler(deps: {
       inc.kind === "dm"
         ? {
             location: "a direct message with the user",
-            details: { channel: inc.channel, ...(inc.threadTs ? { thread_ts: inc.threadTs } : {}) },
+            details: { channel: inc.channel, thread_ts: replyThreadTs },
             instructions: slackSurfaceInstructions(inc.kind),
             reactionGuidance: REACTION_DETECT_GUIDANCE,
           }
@@ -443,7 +444,7 @@ export function createTurnHandler(deps: {
       return;
     }
     ack?.activate();
-    if (inc.kind === "dm" && inc.threadTs && !inc.unprompted) {
+    if (inc.kind === "dm" && replyThreadTs && !inc.unprompted) {
       streamPresenter = createStreamPresenter({
         create: () =>
           client.chatStream({ channel: inc.channel, thread_ts: replyThreadTs, buffer_size: 64 }),
@@ -456,6 +457,14 @@ export function createTurnHandler(deps: {
         finalize: async (ts, finalText, blocks) => {
           await updateSlackMessage(client, inc.channel, ts, finalText, blocks);
           mirrorSelfPost(inc.channel, ts, finalText, { sub: replyThreadTs, editedAt: Date.now() });
+        },
+        onDelivered: async (ts, finalText) => {
+          if (queuedRunId)
+            await checkpointRunDeliveryState(queuedRunId, {
+              editRef: ts,
+              surface: { kind: "stream", channel: inc.channel, ts, complete: true },
+            });
+          mirrorSelfPost(inc.channel, ts, finalText, { sub: replyThreadTs });
         },
         remove: (ts) => client.chat.delete({ channel: inc.channel, ts }).then(() => {}),
         onError: (error) => console.error("[slack-plugin] stream failed:", errMessage(error)),
@@ -486,7 +495,7 @@ export function createTurnHandler(deps: {
     let detectContext: string | undefined;
     let detectOpener: string | undefined;
     let earlierFiles: SlackFile[] = [];
-    if (inc.kind === "channel" || (inc.kind === "dm" && inc.threadTs)) {
+    if (inc.kind === "channel" || inc.kind === "dm") {
       const serialized = await serializer.serializeSlackConversation(client, inc, {
         audience,
         ...(channelName ? { channelName } : {}),
@@ -667,9 +676,11 @@ export function createTurnHandler(deps: {
           postText = [postText, uploadFailureNote(err)].filter(Boolean).join("\n\n");
         }
       }
-      let finalBlocks = queuedRunId
+      let streamBlocks = queuedRunId ? feedbackControls(queuedRunId) : undefined;
+      let postBlocks = queuedRunId && inc.kind !== "dm"
         ? withFeedbackControls(slackSectionBlocks(postText), queuedRunId)
         : undefined;
+      let terminalStreamText = projectSlackText(replyBody || postText);
       const inlineDmApprovals = inc.kind === "dm" && Boolean(result.pendingApprovals?.length);
       if (inlineDmApprovals) {
         const pending = result.pendingApprovals ?? [];
@@ -685,10 +696,18 @@ export function createTurnHandler(deps: {
           ...(slackIdsByPrincipal ? { slackIdsByPrincipal } : {}),
           ...(ack?.postedAck() ? { ackedFirstBlock: ack.postedAck() } : {}),
         });
-        finalBlocks = [...slackSectionBlocks(postText), ...approvalMessage(pending).blocks];
+        streamBlocks = approvalMessage(pending).blocks;
+        postBlocks = [...slackSectionBlocks(postText), ...streamBlocks];
+        terminalStreamText = projectSlackText(postText);
       }
       const streamReply =
-        (await streamPresenter?.finish(postText, finalBlocks)) ?? "none";
+        (await streamPresenter?.finish(
+          postText,
+          streamBlocks,
+          inlineDmApprovals ? null : terminalStreamText,
+          inlineDmApprovals ? postBlocks : undefined,
+        )) ??
+        "none";
       const streamedReply = streamReply !== "none";
       if (streamReply === "recoverable" || streamReply === "orphaned") {
         await settleAck();
@@ -704,11 +723,11 @@ export function createTurnHandler(deps: {
       if (result.attachments?.length) {
         await settleAck();
         if (postText) finalizedTaskList = (await taskList?.finalize(postText, decorateTaskList)) ?? false;
-        if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, finalBlocks);
+        if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, postBlocks);
       } else {
         await settleAck();
         if (postText) finalizedTaskList = (await taskList?.finalize(postText, decorateTaskList)) ?? false;
-        if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, finalBlocks);
+        if (postText && !finalizedTaskList && !streamedReply) await postReply(postText, postBlocks);
       }
       if (queuedRunId) {
         reportTurnMetrics(queuedRunId, {
@@ -775,7 +794,13 @@ export function createTurnHandler(deps: {
       } else {
         approvals.rememberSlackApprovals(pendingApprovals, { ...baseCtx, approvalChannel: inc.channel });
         const msg = approvalMessage(pendingApprovals);
-        const streamApproval = (await streamPresenter?.finish(msg.text, msg.blocks)) ?? "none";
+        const streamApproval =
+          (await streamPresenter?.finish(
+            msg.text,
+            msg.blocks,
+            null,
+            [...slackSectionBlocks(msg.text), ...msg.blocks],
+          )) ?? "none";
         const streamedApproval = streamApproval !== "none";
         if (streamApproval === "recoverable" || streamApproval === "orphaned") {
           if (queuedRunId) inFlightRuns.delete(queuedRunId);

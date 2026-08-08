@@ -39,3 +39,8 @@ export function createSlackDeltaProjector(): SlackDeltaProjector {
     finish: () => drain(true),
   };
 }
+
+export function projectSlackText(text: string): string {
+  const projector = createSlackDeltaProjector();
+  return `${projector.push(text)}${projector.finish()}`;
+}

@@ -306,12 +306,15 @@ export function createMessagingMethods(
     async setRunDeliveryState(runId, state) {
       const found = await deps.runs.setDeliveryState(runId, null, state);
       if (found && state.editRef) await deps.deliveries.setEditRefByKey(`run:${runId}`, state.editRef);
-      if (found && state.surface?.kind === "stream" && state.surface.channel)
-        await deps.deliveries.setStreamByKey(`run:${runId}`, {
-          channel: state.surface.channel,
-          ts: state.surface.ts,
-          unfinished: true,
-        });
+      if (found && state.surface?.kind === "stream" && state.surface.channel) {
+        if (state.surface.complete) await deps.deliveries.completeStreamByKey(`run:${runId}`, state.surface.ts);
+        else
+          await deps.deliveries.setStreamByKey(`run:${runId}`, {
+            channel: state.surface.channel,
+            ts: state.surface.ts,
+            unfinished: true,
+          });
+      }
       return found;
     },
 

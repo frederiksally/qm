@@ -67,11 +67,14 @@ async function postRunDeliveryState(ctx: ApiCtx): Promise<void> {
   const kind = rawSurface?.kind === "message" || rawSurface?.kind === "stream" ? rawSurface.kind : undefined;
   const ts = typeof rawSurface?.ts === "string" ? rawSurface.ts : undefined;
   const channel = typeof rawSurface?.channel === "string" ? rawSurface.channel : undefined;
+  const complete = rawSurface?.complete === true;
   if (!id || (!editRef && !(kind && ts)))
     return sendJson(res, 400, { error: "bad_request", message: "delivery surface required" });
   const found = await app.setRunDeliveryState(id, {
     ...(editRef ? { editRef } : {}),
-    ...(kind && ts ? { surface: { kind, ts, ...(channel ? { channel } : {}) } } : {}),
+    ...(kind && ts
+      ? { surface: { kind, ts, ...(channel ? { channel } : {}), ...(complete ? { complete: true as const } : {}) } }
+      : {}),
   });
   if (!found) return sendJson(res, 404, { error: "not_found" });
   return sendJson(res, 200, { ok: true });

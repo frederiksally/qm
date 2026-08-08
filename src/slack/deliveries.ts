@@ -104,7 +104,10 @@ export function createDeliveryPoller(deps: {
               }
               return undefined;
             }
-            const text = toSlackMrkdwn(runId ? cleanAgentReplyForSlack(d.text).text : stripSlackDirectives(d.text));
+            const deliveryText = runId && !d.text.trim() && d.attachments?.length ? "Attached file(s) below." : d.text;
+            const text = toSlackMrkdwn(
+              runId ? cleanAgentReplyForSlack(deliveryText).text : stripSlackDirectives(deliveryText),
+            );
             const replayAttachments = async (root?: string): Promise<void> => {
               if (!d.attachments?.length) return;
               try {
@@ -140,6 +143,38 @@ export function createDeliveryPoller(deps: {
             const surfaceBlocks = runId
               ? withFeedbackControls(taskListBlocks ?? slackSectionBlocks(text), runId)
               : taskListBlocks;
+            if (d.destination.preserveMessage && d.destination.editRef) {
+              await replayAttachments(threadTs);
+              return undefined;
+            }
+            if (d.destination.stream?.unfinished) {
+              const stream = d.destination.stream;
+              try {
+                await client.chat.delete({ channel: stream.channel, ts: stream.ts });
+              } catch (error) {
+                const code = (error as { data?: { error?: string } })?.data?.error;
+                if (code !== "message_not_found") throw error;
+              }
+              const replacement = await postWithVerify(
+                postClient,
+                {
+                  ...slackReplyArgs(channel, text, threadTs, { unfurlLinks: runId ? false : d.destination.unfurlLinks }),
+                  ...(surfaceBlocks ? { blocks: surfaceBlocks } : {}),
+                },
+                d.idempotencyKey ?? d.id,
+                runId
+                  ? {
+                      verifyFirst: true,
+                      ...(typeof d.createdAt === "number"
+                        ? { verifyOldest: String((d.createdAt - 5_000) / 1000) }
+                        : {}),
+                    }
+                  : undefined,
+              );
+              if (!d.destination.identity) mirrorSelfPost(channel, replacement?.ts, text, { sub: threadTs });
+              await replayAttachments(threadTs);
+              return undefined;
+            }
             if (!text.trim()) {
               if (taskList) {
                 let preserved = false;
@@ -172,22 +207,6 @@ export function createDeliveryPoller(deps: {
               }
               await replayAttachments(threadTs);
               if (d.attachments?.length && threadTs) threads.mark(channel, threadTs, true);
-              return undefined;
-            }
-            if (d.destination.stream?.unfinished) {
-              const stream = d.destination.stream;
-              await client.chat
-                .stopStream({ channel: stream.channel, ts: stream.ts })
-                .catch(swallowAs("slack: stop recovered stream", undefined));
-              await client.chat.update({
-                channel: stream.channel,
-                ts: stream.ts,
-                text,
-                ...(surfaceBlocks ? { blocks: surfaceBlocks } : {}),
-                ...botIdentityArgs(),
-              });
-              mirrorSelfPost(stream.channel, stream.ts, text, { sub: threadTs, editedAt: Date.now() });
-              await replayAttachments(threadTs);
               return undefined;
             }
             if (d.destination.editRef) {

@@ -398,65 +398,31 @@ test("config is all-or-nothing and numeric tuning fails closed", () => {
   assert.deepEqual(config, { botToken: "xoxb", appToken: "xapp", maxPrivateChannels: 10 });
 });
 
-test("a mid-turn message that STEERS the live run does not post the reply twice", async () => {
-  const f = await fixture();
-  try {
-    // Core folds a message that lands mid-run into the LIVE run and answers the steering
-    // request with that run's id, flagged `steered` (src/api/app-turn.ts). Only the handler
-    // that started R1 owns its reply; the one that joined must not deliver it a second time.
-    f.core.holdRun("R1");
-    const first = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "first ask", ts: "300.1" });
-    await waitFor(() => f.core.polled.length === 1);
-    const steer = f.app.emitMessage({
-      channel: "D1",
-      channel_type: "im",
-      user: "U1",
-      text: "and also this",
-      ts: "300.2",
-    });
-    await waitFor(() => f.core.turns.length === 2);
-    assert.deepEqual(f.core.polled, ["R1"], "only the handler that started the run waits on it");
-
-    f.core.finishRun({ status: "ok", reply: "agent reply" });
-    await Promise.all([first, steer]);
-
-    assert.equal(
-      f.client.posts.filter((p) => p.text === "agent reply").length,
-      1,
-      "the shared run's reply is posted once, by the handler that owns it",
-    );
-  } finally {
-    await f.stop();
-  }
-});
-
-test("a top-level DM stays in chat without creating or titling a thread", async () => {
+test("an Agent View DM anchors one native stream to the incoming message", async () => {
   const f = await fixture();
   try {
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" });
     assert.equal(f.core.turns.length, 1);
     assert.equal(f.core.turns[0].text, "hello agent");
     assert.equal(f.core.turns[0].conversation.kind, "dm");
-    assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1");
+    assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1:100.1");
     assert.equal(f.core.turns[0].conversation.audience[0].externalId, "U1");
-    assert.equal(f.core.turns[0].deliveryTarget, "D1");
+    assert.equal(f.core.turns[0].deliveryTarget, "D1:100.1");
     assert.equal(f.core.turns[0].liveActor, true);
     assert.equal(f.core.turns[0].triggerTs, "100.1");
     assert.equal(f.core.ackPicks.length, 1);
     assert.equal(f.core.ackPicks[0]?.text, "hello agent");
     assert.ok((f.core.ackPicks[0]?.candidates.length ?? 0) > 0);
-    assert.deepEqual(
-      f.client.posts.map((p) => p.text),
-      ["agent reply"],
-    );
-    assert.equal(f.client.posts.find((p) => p.text === "agent reply")?.thread_ts, undefined);
+    assert.deepEqual(f.client.posts, []);
+    assert.equal(f.client.streamStops[0]?.args.thread_ts, "100.1");
+    assert.equal(f.client.streamStops[0]?.body.markdown_text, "agent reply");
     assert.deepEqual(f.client.titles, []);
   } finally {
     await f.stop();
   }
 });
 
-test("DM thread replies preserve channel-scoped session and thread-scoped delivery", async () => {
+test("DM thread replies preserve their rooted session and delivery", async () => {
   const f = await fixture();
   try {
     await f.app.emitMessage({
@@ -469,7 +435,7 @@ test("DM thread replies preserve channel-scoped session and thread-scoped delive
     });
     assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1:100.1");
     assert.equal(f.core.turns[0].deliveryTarget, "D1:100.1");
-    assert.equal(f.client.posts.find((p) => p.text === "agent reply")?.thread_ts, "100.1");
+    assert.equal(f.client.streamStops[0]?.args.thread_ts, "100.1");
     assert.deepEqual(f.client.titles, []);
   } finally {
     await f.stop();
@@ -480,7 +446,7 @@ test("top-level and threaded DMs use different run routing keys", async () => {
   const top = await fixture();
   const thread = await fixture();
   try {
-    await top.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "top", ts: "100.1" });
+    await top.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "top", ts: "100.3" });
     await thread.app.emitMessage({
       channel: "D1",
       channel_type: "im",
@@ -536,17 +502,18 @@ test("a queued acknowledgment is updated into a refusal", async () => {
   }
 });
 
-test("a long top-level DM does not create a thread for native status", async () => {
+test("a long Agent View DM uses and clears native status on its rooted thread", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
     const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "work", ts: "100.3" });
     await waitFor(() => f.core.polled.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 2_100));
-    assert.deepEqual(f.client.statuses, []);
+    assert.equal(f.client.statuses[0]?.thread_ts, "100.3");
+    assert.equal(f.client.statuses[0]?.status, "Thinking…");
     f.core.finishRun({ status: "ok", reply: "done" });
     await turn;
-    assert.deepEqual(f.client.statuses, []);
+    assert.equal(f.client.statuses.at(-1)?.status, "");
     assert.deepEqual(f.client.reactionsAdded, []);
   } finally {
     await f.stop();
@@ -572,20 +539,21 @@ test("a queued DM thread reply streams once, checkpoints, and finalizes the same
     assert.equal(f.client.streamAppends[0]?.body.markdown_text, "**short** &lt;@U2&gt; answer");
     f.core.finishRun({ status: "ok", reply: "**short** <@U2> answer" });
     await turn;
-    assert.deepEqual(f.core.editRefs, [{ runId: "R1", editRef: "stream-1" }]);
+    assert.deepEqual(f.core.editRefs, [
+      { runId: "R1", editRef: "stream-1" },
+      { runId: "R1", editRef: "stream-1" },
+    ]);
     assert.equal(f.client.streamStops.length, 1);
     assert.equal(f.client.posts.filter((post) => post.text.includes("short")).length, 0);
-    const update = f.client.updates.find((candidate) => candidate.text === "*short* <@U2> answer");
-    assert.equal(update?.blocks?.[0]?.type, "section");
-    assert.equal(update?.blocks?.[0]?.text?.text, "*short* <@U2> answer");
-    assert.ok(update?.blocks?.some((block: any) => block.type === "context_actions"));
+    assert.equal(f.client.updates.length, 0);
+    assert.ok(f.client.streamStops[0]?.body?.blocks?.some((block: any) => block.type === "context_actions"));
     assert.deepEqual(f.core.ackedRuns, ["R1"]);
   } finally {
     await f.stop();
   }
 });
 
-test("top-level DM activity stays transient and only the final answer is posted", async () => {
+test("Agent View DM activity and final text share one native stream", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
@@ -594,17 +562,17 @@ test("top-level DM activity stays transient and only the final answer is posted"
     f.core.emitActivity([{ id: "tool-1", title: "Looking up relevant context", state: "in_progress" }]);
     f.core.finishRun({ status: "ok", reply: "Here is the result." });
     await turn;
-    assert.equal(f.client.streamAppends.length, 0);
-    assert.equal(f.client.posts.filter((post) => post.text === "Here is the result.").length, 1);
-    assert.equal(f.client.posts.find((post) => post.text === "Here is the result.")?.thread_ts, undefined);
+    assert.equal(f.client.posts.length, 0);
+    assert.equal(f.client.streamStops[0]?.body.markdown_text, "Here is the result.");
+    assert.ok(f.client.streamAppends.some((append) => append.body.chunks?.[0]?.type === "task_update"));
     assert.deepEqual(f.client.titles, []);
-    assert.deepEqual(f.client.statuses, []);
+    assert.ok(f.client.statuses.length === 0 || f.client.statuses.at(-1)?.status === "");
   } finally {
     await f.stop();
   }
 });
 
-test("a queued DM with no deltas posts feedback and only then acknowledges recovery", async () => {
+test("a queued DM with no deltas streams text before stopping with feedback", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
@@ -612,11 +580,9 @@ test("a queued DM with no deltas posts feedback and only then acknowledges recov
     await waitFor(() => f.core.polled.length === 1);
     f.core.finishRun({ status: "ok", reply: "cached answer" });
     await turn;
-    const reply = f.client.posts.find((post) => post.text === "cached answer");
-    assert.equal(reply?.blocks?.[0]?.type, "section");
-    assert.equal(reply?.blocks?.[0]?.text?.text, "cached answer");
-    assert.ok(reply?.blocks?.some((block: any) => block.type === "context_actions"));
-    assert.equal(reply?.metadata?.event_payload?.idempotency_key, "run:R1");
+    assert.equal(f.client.posts.length, 0);
+    assert.equal(f.client.streamStops[0]?.body.markdown_text, "cached answer");
+    assert.ok(f.client.streamStops[0]?.body?.blocks?.some((block: any) => block.type === "context_actions"));
     assert.deepEqual(f.core.ackedRuns, ["R1"]);
   } finally {
     await f.stop();
@@ -644,8 +610,8 @@ test("a late DM thread approval reconciles its opened stream with buttons and no
     });
     await turn;
     assert.equal(f.client.posts.filter((post) => String(post.text).includes("Approval needed")).length, 0);
-    const update = f.client.updates.find((item) => String(item.text).includes("Approval needed"));
-    assert.ok(update?.blocks?.some((block: any) => block.type === "actions"));
+    assert.equal(f.client.updates.length, 0);
+    assert.ok(f.client.streamStops[0]?.body?.blocks?.some((block: any) => block.type === "actions"));
     assert.deepEqual(f.core.ackedRuns, ["R1"]);
   } finally {
     await f.stop();
@@ -730,10 +696,8 @@ test("a DM containing !version follows the ordinary turn path", async () => {
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "!version", ts: "100.2" });
     assert.equal(f.core.turns.length, 1);
     assert.equal(f.core.turns[0].text, "!version");
-    assert.deepEqual(
-      f.client.posts.map((p) => p.text),
-      ["agent reply"],
-    );
+    assert.equal(f.client.posts.length, 0);
+    assert.equal(f.client.streamStops[0]?.body.markdown_text, "agent reply");
   } finally {
     await f.stop();
   }
@@ -752,7 +716,8 @@ test("Slack redelivery and app_mention/message fan-out cannot duplicate a turn",
     await f.app.emitMessage(mention, "Ev-message-copy");
 
     assert.equal(f.core.turns.length, 2);
-    assert.equal(f.client.posts.length, 2);
+    assert.equal(f.client.posts.length, 1);
+    assert.equal(f.client.streamStops.length, 1);
   } finally {
     await f.stop();
   }
@@ -1096,9 +1061,9 @@ test("raw core failures never leak through Slack", async () => {
     f.core.submitError = new Error("password=super-secret postgres://internal-db/run/abc");
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello", ts: "106.1" });
     assert.equal(f.core.turns.length, 1);
-    assert.equal(f.client.posts.length, 1);
-    assert.match(f.client.posts[0].text, /couldn't reach the agent core/);
-    assert.doesNotMatch(f.client.posts[0].text, /super-secret|postgres|run\/abc/);
+    assert.equal(f.client.posts.length, 0);
+    assert.match(f.client.streamStops[0]?.body.markdown_text, /couldn't reach the agent core/);
+    assert.doesNotMatch(f.client.streamStops[0]?.body.markdown_text, /super-secret|postgres|run\/abc/);
   } finally {
     await f.stop();
   }
