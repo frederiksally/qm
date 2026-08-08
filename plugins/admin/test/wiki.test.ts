@@ -63,6 +63,33 @@ test("recent entity headings lead into a focused page lookup", () => {
   assert.match(html, /onEntity: \(name\) => go\(\{ \.\.\.st, view: "wiki", q: name, slug: null \}\)/);
 });
 
+test("daily briefing uses a date-first digest renderer with navigable entity links", () => {
+  assert.match(html, /function renderWikiDigest\(text, openSlug\)/);
+  assert.match(html, /body\.startsWith\("# Daily briefing"\)/);
+  assert.match(html, /className = "wiki-digest-day"/);
+  assert.match(html, /className = "wiki-digest-development"/);
+  assert.match(html, /a\[href\^="wiki:\/"\]/);
+  assert.match(html, /readerTitle\.textContent = st\.slug \? st\.slug\.replace\(\/-\/g, " "\) : "Daily briefing"/);
+  assert.match(html, /What materially changed, grouped by day/);
+  assert.match(html, /renderMarkdown\(value, \{ wikiLinks: true \}\)/);
+  assert.match(html, /anchor\.replaceWith\(button\)/);
+  assert.match(html, /className = "wiki-digest-link"/);
+  assert.match(html, /if \(!day\) \{[\s\S]*?className = "wiki-placeholder";[\s\S]*?appendBody\(empty, part\.text\)/);
+});
+
+test("daily briefing empty state remains visible and wiki links stay digest-scoped", () => {
+  const parseSource = html.match(/function wikiMarkdownParts\(text\) \{[\s\S]*?\n {6}\}/)?.[0];
+  assert.ok(parseSource);
+  const parse = new Function(`${parseSource}; return wikiMarkdownParts;`)();
+  assert.deepEqual(parse("# Daily briefing\n\nNo meaningful developments in the last 7 days.\n"), {
+    title: "Daily briefing",
+    parts: [{ kind: "body", text: "\nNo meaningful developments in the last 7 days.\n" }],
+  });
+  assert.match(html, /function renderMarkdown\(text, options = \{\}\)/);
+  assert.match(html, /options\.wikiLinks \? "\(\?:https\?:/);
+  assert.doesNotMatch(html, /function appendInlineMarkdown\(parent, text\) \{[\s\S]*?wiki:\\\//);
+});
+
 test("wiki network rejection resolves to an explicit unavailable state", () => {
   assert.match(html, /async function wikiApi\(path\)/);
   assert.match(html, /return \{ ok: false, status: 0, data: null \}/);

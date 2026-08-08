@@ -4005,6 +4005,61 @@
         font-weight: 700;
         cursor: pointer;
       }
+      .wiki-digest {
+        display: grid;
+        gap: 24px;
+        max-width: 820px;
+      }
+      .wiki-digest-day {
+        padding: 24px 26px;
+        border: 1px solid #dde4de;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.78);
+        box-shadow: 0 12px 32px rgba(26, 48, 35, 0.06);
+      }
+      .wiki-digest-date {
+        margin: 0;
+        color: var(--wiki-ink);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 22px;
+        font-weight: 500;
+      }
+      .wiki-digest-summary {
+        margin: 8px 0 22px;
+        color: var(--wiki-muted);
+        font-size: 14px;
+        line-height: 1.65;
+      }
+      .wiki-digest-development {
+        padding: 18px 0;
+        border-top: 1px solid #e7ebe7;
+      }
+      .wiki-digest-development h3 {
+        margin: 0 0 7px;
+        color: var(--wiki-ink);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 17px;
+        font-weight: 600;
+      }
+      .wiki-digest-development .message-body {
+        max-width: none;
+      }
+      .wiki-digest-development .message-body p {
+        margin: 5px 0;
+      }
+      .wiki-digest-development .message-body p:last-child {
+        color: var(--wiki-muted);
+        font-size: 12px;
+      }
+      .wiki-digest-link {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--wiki-accent);
+        font: inherit;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
       .wiki-placeholder {
         display: grid;
         place-items: center;
@@ -11280,11 +11335,12 @@
         }
       };
       const TOOL_PREVIEW_CHARS = 1800;
-      function appendInlineMarkdown(parent, text) {
+      function appendInlineMarkdown(parent, text, options = {}) {
         const pushText = (s) => {
           if (s) parent.appendChild(document.createTextNode(s));
         };
-        const re = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|\*([^*]+)\*)/g;
+        const linkProtocol = options.wikiLinks ? "(?:https?:\\/\\/|wiki:\\/)" : "https?:\\/\\/";
+        const re = new RegExp(`(\\*\\*([^*]+)\\*\\*|\`([^\`]+)\`|\\[([^\\]]+)\\]\\((${linkProtocol}[^)\\s]+)\\)|\\*([^*]+)\\*)`, "g");
         let last = 0;
         for (const m of String(text || "").matchAll(re)) {
           pushText(text.slice(last, m.index));
@@ -11299,8 +11355,10 @@
           } else if (m[4] && m[5]) {
             const a = document.createElement("a");
             a.href = m[5];
-            a.target = "_blank";
-            a.rel = "noopener";
+            if (m[5].startsWith("http")) {
+              a.target = "_blank";
+              a.rel = "noopener";
+            }
             a.textContent = m[4];
             parent.appendChild(a);
           } else if (m[6]) {
@@ -11312,7 +11370,7 @@
         }
         pushText(text.slice(last));
       }
-      function renderMarkdown(text) {
+      function renderMarkdown(text, options = {}) {
         const root = document.createElement("div");
         root.className = "message-body";
         const lines = String(text || "")
@@ -11325,7 +11383,7 @@
         const flushPara = () => {
           if (!para.length) return;
           const p = document.createElement("p");
-          appendInlineMarkdown(p, para.join(" "));
+          appendInlineMarkdown(p, para.join(" "), options);
           root.appendChild(p);
           para = [];
         };
@@ -11339,7 +11397,7 @@
           if (!quote.length) return;
           const bq = document.createElement("blockquote");
           const p = document.createElement("p");
-          appendInlineMarkdown(p, quote.join(" "));
+          appendInlineMarkdown(p, quote.join(" "), options);
           bq.appendChild(p);
           root.appendChild(bq);
           quote = [];
@@ -11390,7 +11448,7 @@
               list = { ordered, node: document.createElement(ordered ? "ol" : "ul") };
             }
             const li = document.createElement("li");
-            appendInlineMarkdown(li, listMatch[2]);
+            appendInlineMarkdown(li, listMatch[2], options);
             list.node.appendChild(li);
             continue;
           }
@@ -11435,7 +11493,7 @@
         };
         const addText = (s, depth) => {
           const t = s.replace(/^[\s\n]+|[\s\n]+$/g, "");
-          if (t) appendInlineMarkdown(row("xml-text", depth), unescape(t));
+          if (t) appendInlineMarkdown(row("xml-text", depth), unescape(t), options);
         };
         const tagRe = /<\/?[A-Za-z][\w-]*(?:\s+[\w-]+(?:="[^"]*")?)*\s*\/?>/g;
         let depth = 0,
@@ -12448,6 +12506,75 @@
         return { title, parts };
       }
 
+      function renderWikiDigest(text, openSlug) {
+        const parsed = wikiMarkdownParts(text);
+        const content = document.createElement("div");
+        content.className = "wiki-digest";
+        let day = null;
+        let development = null;
+        const appendBody = (target, value) => {
+          const rendered = renderMarkdown(value, { wikiLinks: true });
+          for (const anchor of rendered.querySelectorAll('a[href^="wiki:/"]')) {
+            const slug = wikiSlugFromLine(`slug:${anchor.getAttribute("href").slice(6)}`);
+            if (!slug) {
+              anchor.replaceWith(document.createTextNode(anchor.textContent || ""));
+              continue;
+            }
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "wiki-digest-link";
+            button.textContent = anchor.textContent || slug;
+            button.onclick = () => openSlug(slug);
+            anchor.replaceWith(button);
+          }
+          target.append(...rendered.children);
+        };
+        for (const part of parsed.parts) {
+          if (part.kind === "heading" && part.level === 2 && /^\d{4}-\d{2}-\d{2}$/u.test(part.text)) {
+            day = document.createElement("section");
+            day.className = "wiki-digest-day";
+            const heading = document.createElement("h2");
+            heading.className = "wiki-digest-date";
+            heading.textContent = new Date(`${part.text}T12:00:00Z`).toLocaleDateString(undefined, {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+            });
+            day.appendChild(heading);
+            content.appendChild(day);
+            development = null;
+            continue;
+          }
+          if (!day) {
+            if (part.kind === "body") {
+              const empty = document.createElement("div");
+              empty.className = "wiki-placeholder";
+              appendBody(empty, part.text);
+              content.appendChild(empty);
+            }
+            continue;
+          }
+          if (part.kind === "heading" && part.level === 3) {
+            development = document.createElement("article");
+            development.className = "wiki-digest-development";
+            const heading = document.createElement("h3");
+            heading.textContent = part.text;
+            development.appendChild(heading);
+            day.appendChild(development);
+            continue;
+          }
+          if (part.kind !== "body") continue;
+          if (development) appendBody(development, part.text);
+          else {
+            const summary = document.createElement("div");
+            summary.className = "wiki-digest-summary";
+            appendBody(summary, part.text);
+            day.appendChild(summary);
+          }
+        }
+        return { title: parsed.title, content };
+      }
+
       function renderWikiMarkdown(text, options = {}) {
         const parsed = wikiMarkdownParts(text);
         const content = document.createElement("div");
@@ -12548,18 +12675,18 @@
         readerEyebrow.className = "wiki-eyebrow";
         readerEyebrow.textContent = st.slug ? "Knowledge page" : "Briefing";
         const readerTitle = document.createElement("h2");
-        readerTitle.textContent = st.slug ? st.slug.replace(/-/g, " ") : "Recent changes";
+        readerTitle.textContent = st.slug ? st.slug.replace(/-/g, " ") : "Daily briefing";
         const readerCopy = document.createElement("p");
         readerCopy.textContent = st.slug
           ? "A maintained view of the current state and meaningful history."
-          : "The meaningful changes from the last seven days, without the message-by-message noise.";
+          : "What materially changed, grouped by day. Search the wiki when you need the underlying detail.";
         readerHeadCopy.append(readerEyebrow, readerTitle, readerCopy);
         readerHead.appendChild(readerHeadCopy);
         if (st.slug) {
           const home = document.createElement("button");
           home.type = "button";
           home.className = "wiki-home-button";
-          home.textContent = "← Recent changes";
+          home.textContent = "← Daily briefing";
           home.onclick = () => go({ ...st, view: "wiki", slug: null });
           readerHead.appendChild(home);
         }
@@ -12657,12 +12784,11 @@
           const body = response.data.body;
           if (!body) pageBody.appendChild(wikiEmpty("Nothing here yet", "The wiki will fill in as meaningful work is observed."));
           else {
-            const rendered = renderWikiMarkdown(
-              body,
-              st.slug
-                ? {}
-                : { onEntity: (name) => go({ ...st, view: "wiki", q: name, slug: null }) },
-            );
+            const rendered = st.slug
+              ? renderWikiMarkdown(body)
+              : body.startsWith("# Daily briefing")
+                ? renderWikiDigest(body, openSlug)
+                : renderWikiMarkdown(body, { onEntity: (name) => go({ ...st, view: "wiki", q: name, slug: null }) });
             if (rendered.title) readerTitle.textContent = rendered.title;
             pageBody.appendChild(rendered.content);
           }
