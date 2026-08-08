@@ -34,6 +34,7 @@ export interface PluginSecret {
 export interface PluginEntry {
   name: string;
   image?: string;
+  healthPath?: string;
   env?: Record<string, string>;
   secrets?: PluginSecret[];
 }
@@ -914,6 +915,13 @@ function validatePlugins(raw: unknown, path: string): PluginEntry[] {
         throw new CliError(`${path}: plugins[${i}].image must be a non-empty string (a pullable image ref) when set`);
       }
       entry.image = e["image"];
+    }
+    if (e["healthPath"] !== undefined) {
+      if (typeof e["healthPath"] !== "string" || !/^\/[A-Za-z0-9/_-]*$/.test(e["healthPath"])) {
+        throw new CliError(`${path}: plugins[${i}].healthPath must be an absolute URL path`);
+      }
+      if (entry.image) throw new CliError(`${path}: plugins[${i}].healthPath requires a source plugin`);
+      entry.healthPath = e["healthPath"];
     }
     if (e["env"] !== undefined) entry.env = validateStringMap(e["env"], path, `plugins[${i}].env`);
     if (e["secrets"] !== undefined) entry.secrets = validatePluginSecrets(e["secrets"], path, i);

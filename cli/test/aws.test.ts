@@ -2062,6 +2062,34 @@ test("AWS retains built-in health enforcement when an image is overridden", () =
   assert.match((container.healthCheck as { command: string[] }).command[3]!, /\/healthz/);
 });
 
+test("AWS renders an explicit source-plugin health check", () => {
+  const sourcePlugin: QmConfig = {
+    ...config,
+    plugins: [{ name: "linear", healthPath: "/health" }],
+    aws: {
+      ...config.aws!,
+      services: {
+        ...config.aws!.services,
+        linear: { ecrRepository: "linear", ecsService: "linear", cpu: 256, memory: 512, architecture: "amd64" },
+      },
+    },
+  };
+  const image = `123456789012.dkr.ecr.us-west-2.amazonaws.com/qm-linear@sha256:${"a".repeat(64)}`;
+  const container = renderTaskDefinition(sourcePlugin, "linear", image).containerDefinitions[0]!;
+  assert.deepEqual(container.healthCheck, {
+    command: [
+      "CMD",
+      "node",
+      "-e",
+      'fetch("http://127.0.0.1:8080/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))',
+    ],
+    interval: 30,
+    timeout: 5,
+    retries: 3,
+    startPeriod: 30,
+  });
+});
+
 test("AWS secret upload reads the deployment .env and removes every plaintext staging file", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-aws-secrets-"));
   const bin = join(dir, "aws-fake");
