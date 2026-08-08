@@ -334,8 +334,10 @@ export function renderTaskDefinition(
       })),
     )
     .sort((a, b) => a.name.localeCompare(b.name));
-  const healthCheck = isServiceName(service)
-    ? {
+  const pluginHealthPath = config.plugins.find((plugin) => plugin.name === service)?.healthPath;
+  let healthCheck;
+  if (isServiceName(service)) {
+    healthCheck = {
         command: [
           "CMD",
           "node",
@@ -346,8 +348,21 @@ export function renderTaskDefinition(
         timeout: 5,
         retries: 3,
         startPeriod: 30,
-      }
-    : undefined;
+      };
+  } else if (pluginHealthPath) {
+    healthCheck = {
+      command: [
+        "CMD",
+        "node",
+        "-e",
+        `fetch(${JSON.stringify(`http://127.0.0.1:${internalPort}${pluginHealthPath}`)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+      ],
+      interval: 30,
+      timeout: 5,
+      retries: 3,
+      startPeriod: 30,
+    };
+  }
   return {
     family: spec.ecsService,
     networkMode: "awsvpc",

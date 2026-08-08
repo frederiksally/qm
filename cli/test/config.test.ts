@@ -112,6 +112,18 @@ test("plugins: image is OPTIONAL (source plugins); env attaches to either; bad i
   );
 });
 
+test("plugins validate an optional health path", () => {
+  withConfig({ plugins: [{ name: "wiki", healthPath: "/health" }] }, ({ path }) => {
+    assert.equal(loadConfigAt(path).config.plugins[0]!.healthPath, "/health");
+  });
+  withConfig({ plugins: [{ name: "wiki", healthPath: "health" }] }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /healthPath must be an absolute URL path/);
+  });
+  withConfig({ plugins: [{ name: "wiki", image: "ghcr.io/acme/wiki:1", healthPath: "/health" }] }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /healthPath requires a source plugin/);
+  });
+});
+
 test("env (per-service) and imageOverrides validate by service name", () => {
   withConfig({ env: { core: { PUBLIC_WEB_URL: "http://x" } }, imageOverrides: { core: "ghcr.io/x:1" } }, ({ path }) => {
     const { config } = loadConfigAt(path);

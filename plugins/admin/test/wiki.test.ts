@@ -27,7 +27,73 @@ test("a stale focused wiki refreshes through its own reader", () => {
   const focus = html.match(/window\.addEventListener\("focus", \(\) => \{[\s\S]*?\n {6}\}\);/)?.[0];
   assert.ok(focus);
   assert.match(focus, /if \(view === "wiki"\) \{\s*renderWiki\(urlToState\(\)\);\s*return;/);
-  assert.match(html, /await renderSearch\(\);\s*viewLoadedAt\.wiki = Date\.now\(\);/);
+  assert.match(html, /await searchPromise;[\s\S]*?viewLoadedAt\.wiki = Date\.now\(\);/);
+});
+
+test("wiki search results become human-readable structured cards", () => {
+  const slugSource = html.match(/function wikiSlugFromLine\(line\) \{[\s\S]*?\n {6}\}/)?.[0];
+  const hitSource = html.match(/function wikiSearchHitFromLine\(line\) \{[\s\S]*?\n {6}\}/)?.[0];
+  assert.ok(slugSource);
+  assert.ok(hitSource);
+  const parse = new Function(`${slugSource}; ${hitSource}; return wikiSearchHitFromLine;`)();
+  assert.deepEqual(
+    parse("Atlas · project · slug:atlas · last seen 2026-08-08T08:00:00.000Z — Active launch work"),
+    {
+      slug: "atlas",
+      name: "Atlas",
+      type: "project",
+      lastSeen: "2026-08-08T08:00:00.000Z",
+      summary: "Active launch work",
+    },
+  );
+  assert.match(html, /className = "wiki-result-summary"/);
+  assert.match(html, /aria-current/);
+  assert.match(html, /limit=30/);
+});
+
+test("wiki reader collapses source-heavy sections and guards stale requests", () => {
+  assert.match(html, /summary\.textContent = "Sources and provenance"/);
+  assert.match(html, /requestId !== wikiReq/);
+  assert.match(html, /const searchPromise = renderSearch\(\)/);
+  assert.doesNotMatch(html, /else pageBody\.appendChild\(renderMarkdown\(body\)\)/);
+});
+
+test("recent entity headings lead into a focused page lookup", () => {
+  assert.match(html, /recentEntity\[1\]\.trim\(\) \+ " →"/);
+  assert.match(html, /onEntity: \(name\) => go\(\{ \.\.\.st, view: "wiki", q: name, slug: null \}\)/);
+});
+
+test("daily briefing uses a date-first digest renderer with navigable entity links", () => {
+  assert.match(html, /function renderWikiDigest\(text, openSlug\)/);
+  assert.match(html, /body\.startsWith\("# Daily briefing"\)/);
+  assert.match(html, /className = "wiki-digest-day"/);
+  assert.match(html, /className = "wiki-digest-development"/);
+  assert.match(html, /a\[href\^="wiki:\/"\]/);
+  assert.match(html, /readerTitle\.textContent = st\.slug \? st\.slug\.replace\(\/-\/g, " "\) : "Daily briefing"/);
+  assert.match(html, /What materially changed, grouped by day/);
+  assert.match(html, /renderMarkdown\(value, \{ wikiLinks: true \}\)/);
+  assert.match(html, /anchor\.replaceWith\(button\)/);
+  assert.match(html, /className = "wiki-digest-link"/);
+  assert.match(html, /if \(!day\) \{[\s\S]*?className = "wiki-placeholder";[\s\S]*?appendBody\(empty, part\.text\)/);
+});
+
+test("daily briefing empty state remains visible and wiki links stay digest-scoped", () => {
+  const parseSource = html.match(/function wikiMarkdownParts\(text\) \{[\s\S]*?\n {6}\}/)?.[0];
+  assert.ok(parseSource);
+  const parse = new Function(`${parseSource}; return wikiMarkdownParts;`)();
+  assert.deepEqual(parse("# Daily briefing\n\nNo meaningful developments in the last 7 days.\n"), {
+    title: "Daily briefing",
+    parts: [{ kind: "body", text: "\nNo meaningful developments in the last 7 days.\n" }],
+  });
+  assert.match(html, /function renderMarkdown\(text, options = \{\}\)/);
+  assert.match(html, /options\.wikiLinks \? "\(\?:https\?:/);
+  assert.doesNotMatch(html, /function appendInlineMarkdown\(parent, text\) \{[\s\S]*?wiki:\\\//);
+});
+
+test("wiki network rejection resolves to an explicit unavailable state", () => {
+  assert.match(html, /async function wikiApi\(path\)/);
+  assert.match(html, /return \{ ok: false, status: 0, data: null \}/);
+  assert.doesNotMatch(html, /await api\("GET", "\/api\/wiki/);
 });
 
 test("wiki search recognizes the full wiki slug contract", () => {
@@ -43,7 +109,7 @@ test("wiki search recognizes the full wiki slug contract", () => {
 });
 
 test("wiki text is rendered through the existing safe markdown renderer", () => {
-  assert.match(html, /function renderWikiMarkdown\(text\)/);
+  assert.match(html, /function renderWikiMarkdown\(text, options = \{\}\)/);
   assert.match(html, /function wikiMarkdownParts\(text\)/);
   assert.match(html, /readerTitle\.textContent = rendered\.title/);
   assert.match(html, /code\.textContent = fence\.lines\.join/);
