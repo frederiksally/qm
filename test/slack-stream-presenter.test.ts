@@ -223,7 +223,7 @@ test("a delta after exactly 40000 live characters cannot overflow the ceiling", 
   assert.equal(appends.join("").length, 40_000);
 });
 
-test("task chunks preserve Unicode titles and bound opaque ids", async () => {
+test("activity updates replace one stable card and preserve Unicode titles", async () => {
   const chunks: Array<Record<string, unknown>> = [];
   const streamer = {
     ts: undefined as string | undefined,
@@ -240,8 +240,16 @@ test("task chunks preserve Unicode titles and bound opaque ids", async () => {
     remove: async () => {},
   });
   presenter.pushActivity([{ id: "x".repeat(300), title: `${"a".repeat(255)}😀tail`, state: "in_progress" }]);
+  presenter.pushActivity([
+    { id: "first", title: "First", state: "completed" },
+    { id: "second", title: "Second", state: "in_progress" },
+  ]);
   assert.equal(await presenter.finish("done"), "delivered");
-  assert.match(String(chunks[0]?.id), /^task:[a-f0-9]{64}$/);
+  assert.equal(chunks[0]?.id, "current_activity");
+  assert.equal(chunks[1]?.id, "current_activity");
+  assert.equal(chunks[1]?.title, "Second");
+  assert.equal(chunks.at(-1)?.id, "current_activity");
+  assert.equal(chunks.at(-1)?.status, "complete");
   assert.equal(Array.from(String(chunks[0]?.title)).length, 256);
   assert.equal(String(chunks[0]?.title).endsWith("😀"), true);
 });

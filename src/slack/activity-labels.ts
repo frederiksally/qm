@@ -1,14 +1,10 @@
 import type { RunActivityEntry } from "../runs/run-activity-store.ts";
 
+const HIDDEN_TOOLS = new Set(["execute", "read", "write", "history", "memory", "guidance"]);
+
 const TOOL_LABELS: Record<string, string> = {
-  execute: "Running a command",
-  read: "Reading a file",
-  write: "Writing a file",
   publish: "Publishing files",
-  history: "Reviewing conversation history",
   share: "Sharing an artifact",
-  memory: "Working with memory",
-  guidance: "Reviewing guidance",
   background: "Managing background work",
   cron: "Managing scheduled work",
   slack: "Working in Slack",
@@ -18,12 +14,6 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 const ACTION_LABELS: Record<string, string> = {
-  "memory:search": "Searching memory",
-  "memory:remember": "Writing to memory",
-  "memory:read": "Reading memory",
-  "memory:rewrite": "Updating memory",
-  "guidance:read": "Reading guidance",
-  "guidance:write": "Updating guidance",
   "background:start": "Starting background work",
   "background:poll": "Checking background work",
   "background:stop": "Stopping background work",
@@ -59,5 +49,6 @@ export function activityLabel(entry: RunActivityEntry): string | undefined {
   const action =
     typeof (payload as { action?: unknown }).action === "string" ? (payload as { action: string }).action : "";
   if (!tool || tool === "finish_silently" || tool === "stay_silent") return undefined;
+  if (HIDDEN_TOOLS.has(tool)) return undefined;
   return ACTION_LABELS[`${tool}:${action}`] ?? TOOL_LABELS[tool];
 }

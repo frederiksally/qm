@@ -56,7 +56,6 @@ import type { ConversationSerializer } from "./conversation-view.ts";
 import { reactionTallies } from "./conversation-view.ts";
 import type { Approvals } from "./approvals.ts";
 import type { AckEmojiPicker } from "./ack-emoji.ts";
-import type { SlackActivityStep } from "./activity-steps.ts";
 import { createStreamPresenter, type StreamPresenter } from "./stream-presenter.ts";
 import { feedbackControls, withFeedbackControls } from "./feedback.ts";
 import { projectSlackText } from "./stream-projector.ts";
@@ -93,16 +92,6 @@ interface Incoming {
     publishMembers?: ActorAssertion[];
     slackIdsByPrincipal?: Map<string, string>;
   };
-}
-
-const statusCalls: number[] = [];
-const STATUS_CALLS_PER_MINUTE = 300;
-
-function takeStatusBudget(required = false, now = Date.now()): boolean {
-  while (statusCalls.length && statusCalls[0]! <= now - 60_000) statusCalls.shift();
-  if (!required && statusCalls.length >= STATUS_CALLS_PER_MINUTE) return false;
-  statusCalls.push(now);
-  return true;
 }
 
 export interface SlackReactionEvent {
@@ -295,62 +284,17 @@ export function createTurnHandler(deps: {
     let queuedRunId: string | undefined;
     let taskList: TaskListPresenter | undefined;
     let streamPresenter: StreamPresenter | undefined;
-    let statusRefresh: ReturnType<typeof setInterval> | undefined;
-    let statusUpdate: ReturnType<typeof setTimeout> | undefined;
-    let statusShown = false;
-    let latestStatus = "Thinking…";
-    let lastStatusAt = 0;
-    const sendStatus = async (): Promise<void> => {
-      if (!takeStatusBudget()) return;
-      statusShown = true;
-      lastStatusAt = Date.now();
-      await client.assistant.threads.setStatus({
-        channel_id: inc.channel,
-        thread_ts: replyThreadTs,
-        status: latestStatus,
-      });
-    };
-    const updateBusyStatus = (steps: SlackActivityStep[]): void => {
-      if (inc.kind !== "dm" || !replyThreadTs) return;
-      const current = [...steps]
-        .reverse()
-        .find((step) => step.state === "in_progress" || step.state === "waiting_approval" || step.state === "pending");
-      if (!current) return;
-      latestStatus = current.title;
-      if (statusUpdate) return;
-      const delay = Math.max(0, 5_000 - (Date.now() - lastStatusAt));
-      statusUpdate = setTimeout(() => {
-        statusUpdate = undefined;
-        void sendStatus().catch(() => {});
-      }, delay);
-      statusUpdate.unref?.();
-    };
     const showBusy = async (name: string): Promise<void> => {
       if (inc.kind === "channel") {
         await client.reactions.add({ channel: inc.channel, timestamp: inc.ts, name });
-        return;
-      }
-      if (!replyThreadTs) return;
-      await sendStatus();
-      if (!statusRefresh) {
-        statusRefresh = setInterval(() => void sendStatus().catch(() => {}), 90_000);
-        statusRefresh.unref?.();
+      } else {
+        streamPresenter?.pushActivity([{ id: "delayed", title: "Working on it", state: "in_progress" }]);
       }
     };
     const clearBusy = async (name: string): Promise<void> => {
       if (inc.kind === "channel") {
         await client.reactions.remove({ channel: inc.channel, timestamp: inc.ts, name });
-        return;
       }
-      if (!replyThreadTs) return;
-      if (statusUpdate) clearTimeout(statusUpdate);
-      statusUpdate = undefined;
-      if (!statusShown) return;
-      if (statusRefresh) clearInterval(statusRefresh);
-      statusRefresh = undefined;
-      takeStatusBudget(true);
-      await client.assistant.threads.setStatus({ channel_id: inc.channel, thread_ts: replyThreadTs, status: "" });
-      statusShown = false;
     };
     const ack = inc.unprompted
       ? undefined
@@ -447,7 +391,12 @@ export function createTurnHandler(deps: {
     if (inc.kind === "dm" && replyThreadTs && !inc.unprompted) {
       streamPresenter = createStreamPresenter({
         create: () =>
-          client.chatStream({ channel: inc.channel, thread_ts: replyThreadTs, buffer_size: 64 }),
+          client.chatStream({
+            channel: inc.channel,
+            thread_ts: replyThreadTs,
+            buffer_size: 64,
+            task_display_mode: "dense",
+          }),
         checkpoint: async (ts) => {
           if (queuedRunId)
             await checkpointRunDeliveryState(queuedRunId, {
@@ -597,7 +546,6 @@ export function createTurnHandler(deps: {
               }
             : {}),
           onActivity: (steps) => {
-            updateBusyStatus(steps);
             streamPresenter?.pushActivity(steps);
           },
           ...(streamPresenter ? { onDelta: (delta: string) => streamPresenter.pushDelta(delta) } : {}),
@@ -625,20 +573,21 @@ export function createTurnHandler(deps: {
     try {
     if (result.steered) {
       await settleAck();
+      await streamPresenter?.discard();
       return;
     }
 
     if (result.status === "silent") {
       if (inc.unprompted) console.error(`[slack-plugin] turn.silent (no reply) ch=${inc.channel} ts=${inc.ts}`);
-      await streamPresenter?.discard();
       await settleAck();
+      await streamPresenter?.discard();
       if (queuedRunId) inFlightRuns.delete(queuedRunId);
       return;
     }
 
     if (result.status === "react") {
-      await streamPresenter?.discard();
       await settleAck();
+      await streamPresenter?.discard();
       const names = result.reactions ?? [];
       if (names.length) await applyAndLogReactions(client, inc.channel, inc.ts, [{ names }]);
       console.error(`[slack-plugin] turn.react (acknowledged) ch=${inc.channel} ts=${inc.ts} emoji=${names.join(",")}`);
