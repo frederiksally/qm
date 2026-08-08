@@ -293,6 +293,7 @@ const READS = [
   "slack-installation",
   "model-providers",
   "custom-providers",
+  "wiki",
 ];
 
 const server = createServer((req, res) => {
