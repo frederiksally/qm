@@ -6128,6 +6128,10 @@
           if (!urlToState().container) renderSlackMirror(urlToState());
           return;
         }
+        if (view === "wiki") {
+          renderWiki(urlToState());
+          return;
+        }
         if (view === "crons" && cronDestinationEditId) return;
         if (historyIsIndex()) loadScopeDirectory();
         else renderData();
@@ -12250,6 +12254,7 @@
           } else pageBody.appendChild(renderMarkdown(body));
         }
         await renderSearch();
+        viewLoadedAt.wiki = Date.now();
       }
       let slackReq = 0;
       let slackContainers = null;

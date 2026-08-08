@@ -23,6 +23,13 @@ test("wiki page and search state survives navigation and direct links", () => {
   assert.match(html, /q: p\.get\("q"\) \|\| null/);
 });
 
+test("a stale focused wiki refreshes through its own reader", () => {
+  const focus = html.match(/window\.addEventListener\("focus", \(\) => \{[\s\S]*?\n {6}\}\);/)?.[0];
+  assert.ok(focus);
+  assert.match(focus, /if \(view === "wiki"\) \{\s*renderWiki\(urlToState\(\)\);\s*return;/);
+  assert.match(html, /await renderSearch\(\);\s*viewLoadedAt\.wiki = Date\.now\(\);/);
+});
+
 test("wiki search recognizes the full wiki slug contract", () => {
   const source = html.match(/function wikiSlugFromLine\(line\) \{[\s\S]*?\n {6}\}/)?.[0];
   assert.ok(source);
