@@ -287,8 +287,6 @@ export function createTurnHandler(deps: {
     const showBusy = async (name: string): Promise<void> => {
       if (inc.kind === "channel") {
         await client.reactions.add({ channel: inc.channel, timestamp: inc.ts, name });
-      } else {
-        streamPresenter?.pushActivity([{ id: "delayed", title: "Working on it", state: "in_progress" }]);
       }
     };
     const clearBusy = async (name: string): Promise<void> => {
@@ -549,6 +547,7 @@ export function createTurnHandler(deps: {
             streamPresenter?.pushActivity(steps);
           },
           ...(streamPresenter ? { onDelta: (delta: string) => streamPresenter.pushDelta(delta) } : {}),
+          ...(streamPresenter ? { onToolCall: () => streamPresenter.beginToolWork() } : {}),
         },
       );
       await taskList?.settle();

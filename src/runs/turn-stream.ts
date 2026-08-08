@@ -17,6 +17,7 @@ export interface TurnStream {
 
 export interface TurnStreamListener {
   onDelta?(delta: string): void;
+  onToolCall?(): void;
   onFirstBlock?(text: string): void;
   onSurfacePosted?(): void;
 }
@@ -26,6 +27,7 @@ interface Entry {
   firstBlock: string;
   firstBlockOpen: boolean;
   firstBlockClosed: boolean;
+  toolCallSeen: boolean;
   surfacePosted: boolean;
   live: boolean;
   replying: boolean;
@@ -57,6 +59,7 @@ function makeEntry(partial: Partial<Entry> = {}): Entry {
     firstBlock: "",
     firstBlockOpen: true,
     firstBlockClosed: false,
+    toolCallSeen: false,
     surfacePosted: false,
     live: true,
     replying: true,
@@ -123,12 +126,16 @@ export function createTurnStream(opts: TurnStreamOptions = {}): TurnStream {
 
     noteToolCall(runId) {
       const entry = ensure(runId);
-      if (!entry.firstBlockOpen) return;
-      entry.firstBlockOpen = false;
-      entry.firstBlockClosed = entry.firstBlock.trim().length > 0;
-      if (entry.firstBlockClosed) {
-        for (const listener of listeners.get(runId) ?? []) invoke(() => listener.onFirstBlock?.(entry.firstBlock));
+      if (entry.firstBlockOpen) {
+        entry.firstBlockOpen = false;
+        entry.firstBlockClosed = entry.firstBlock.trim().length > 0;
+        if (entry.firstBlockClosed) {
+          for (const listener of listeners.get(runId) ?? []) invoke(() => listener.onFirstBlock?.(entry.firstBlock));
+        }
       }
+      if (entry.toolCallSeen) return;
+      entry.toolCallSeen = true;
+      for (const listener of listeners.get(runId) ?? []) invoke(listener.onToolCall);
     },
 
     firstBlock(runId) {
@@ -180,6 +187,7 @@ export function createTurnStream(opts: TurnStreamOptions = {}): TurnStream {
         listeners.set(runId, set);
       }
       set.add(listener);
+      if (runs.get(runId)?.toolCallSeen) invoke(listener.onToolCall);
       return () => {
         set.delete(listener);
         if (set.size === 0 && listeners.get(runId) === set) listeners.delete(runId);
