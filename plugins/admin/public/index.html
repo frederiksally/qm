@@ -3748,6 +3748,78 @@
           padding: 0 2px;
         }
       }
+      .wiki-layout {
+        display: grid;
+        grid-template-columns: minmax(260px, 0.75fr) minmax(0, 1.6fr);
+        gap: 18px;
+      }
+      .wiki-panel {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      .wiki-panel-head {
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--border);
+      }
+      .wiki-panel-head h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+      .wiki-panel-head p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .wiki-search-form {
+        display: flex;
+        gap: 8px;
+        padding: 16px 18px;
+      }
+      .wiki-search-form input {
+        flex: 1;
+        min-width: 0;
+      }
+      .wiki-results {
+        border-top: 1px solid var(--border);
+      }
+      .wiki-result {
+        display: block;
+        width: 100%;
+        padding: 13px 18px;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        border-radius: 0;
+        background: transparent;
+        color: inherit;
+        text-align: left;
+        line-height: 1.45;
+      }
+      .wiki-result:hover {
+        background: var(--subtle);
+      }
+      .wiki-result:last-child {
+        border-bottom: 0;
+      }
+      .wiki-page {
+        padding: 22px 24px;
+      }
+      .wiki-page .message-body {
+        max-width: 760px;
+      }
+      .wiki-placeholder {
+        padding: 32px 24px;
+        color: var(--muted);
+      }
+      .wiki-recent {
+        margin-top: 18px;
+      }
+      @media (max-width: 760px) {
+        .wiki-layout {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
   <body>
@@ -4824,7 +4896,7 @@
       const EFFECTS = ["allow", "deny", "require_approval"];
       const EFFECT_LABELS = { allow: "Allow", deny: "Deny", require_approval: "Require approval" };
       const SECTIONS = [
-        { views: ["history", "slack", "judgments"] },
+        { views: ["history", "slack", "wiki", "judgments"] },
         { label: "Artifacts", views: ["files", "skills", "memory", "deployments", "crons"] },
         { label: "System", views: ["metrics"] },
         { label: "Admin", views: ["onboarding", "governance", "connectors", "users", "keychain", "egress", "audit"] },
@@ -4856,6 +4928,7 @@
         deployments: "Deployments",
         retention: "Retention",
         slack: "Slack",
+        wiki: "Wiki",
         judgments: "Judgments",
         ackemoji: "Ack emoji",
       };
@@ -5510,6 +5583,8 @@
         if (st.view === "ackemoji" && st.container) p.set("container", st.container);
         if (st.view === "ackemoji" && st.decision) p.set("decision", st.decision);
         if (st.view === "ackemoji" && st.jid) p.set("jid", st.jid);
+        if (st.view === "wiki" && st.slug) p.set("slug", st.slug);
+        if (st.view === "wiki" && st.q) p.set("q", st.q);
         const q = p.toString();
 
         const path = API_BASE + "/" + encodeURIComponent(st.view || DEFAULT_VIEW);
@@ -5559,6 +5634,8 @@
           ts: p.get("ts") || null,
           decision: p.get("decision") || null,
           jid: p.get("jid") || null,
+          slug: p.get("slug") || null,
+          q: p.get("q") || null,
         };
       }
 
@@ -5592,6 +5669,7 @@
         if (view === "slack") return void renderSlackMirror(st);
         if (view === "judgments") return void renderAmbientJudgments(st);
         if (view === "ackemoji") return void renderAckEmojiPicks(st);
+        if (view === "wiki") return void renderWiki(st);
         if (view === "history" && st.session && st.turn != null) return void showContextPage(st.session, st.turn);
         if (view === "history" && st.session) return void showTranscript(st.session);
         renderCurrentData();
@@ -6048,6 +6126,10 @@
         }
         if (view === "slack") {
           if (!urlToState().container) renderSlackMirror(urlToState());
+          return;
+        }
+        if (view === "wiki") {
+          renderWiki(urlToState());
           return;
         }
         if (view === "crons" && cronDestinationEditId) return;
@@ -12024,6 +12106,155 @@
         p.className = "empty";
         p.textContent = text;
         return p;
+      }
+
+      function wikiSlugFromLine(line) {
+        const text = String(line || "").trim();
+        const named = text.match(/\bslug\s*[:=]\s*`?([^`\s|]+)/iu);
+        const linked = text.match(/\]\((?:wiki:)?\/?([^\s/)]+)\)/iu);
+        const leading = text.match(/^(?:[-*]\s*)?`?([^`\s|—–:]+)`?\s*(?:[|—–:-]|$)/u);
+        const slug = named?.[1] ?? linked?.[1] ?? leading?.[1] ?? "";
+        return slug.length <= 200 && /^[\p{L}\p{N}][\p{L}\p{N}-]*$/u.test(slug) ? slug : null;
+      }
+
+      function wikiMarkdownParts(text) {
+        const lines = String(text || "")
+          .replace(/\r\n/g, "\n")
+          .split("\n");
+        const parts = [];
+        let title = null;
+        let body = [];
+        let fenced = false;
+        const flush = () => {
+          if (body.some((line) => line.trim())) parts.push({ kind: "body", text: body.join("\n") });
+          body = [];
+        };
+        for (const line of lines) {
+          if (/^\s*```/.test(line)) {
+            fenced = !fenced;
+            body.push(line);
+            continue;
+          }
+          const match = fenced ? null : line.trim().match(/^(#{1,3})\s+(.+)$/);
+          if (!match) {
+            body.push(line);
+            continue;
+          }
+          flush();
+          if (match[1].length === 1 && title === null) title = match[2];
+          else parts.push({ kind: "heading", level: Math.max(2, match[1].length), text: match[2] });
+        }
+        flush();
+        return { title, parts };
+      }
+
+      function renderWikiMarkdown(text) {
+        const parsed = wikiMarkdownParts(text);
+        const content = document.createElement("div");
+        content.className = "message-body";
+        for (const part of parsed.parts) {
+          if (part.kind === "body") content.append(...renderMarkdown(part.text).children);
+          else {
+            const heading = document.createElement(part.level === 2 ? "h2" : "h3");
+            heading.textContent = part.text;
+            content.appendChild(heading);
+          }
+        }
+        return { title: parsed.title, content };
+      }
+
+      async function renderWiki(st) {
+        defaultShell();
+        const root = $("view-data");
+        root.textContent = "";
+        const layout = document.createElement("div");
+        layout.className = "wiki-layout";
+        const browse = document.createElement("section");
+        browse.className = "wiki-panel";
+        const browseHead = document.createElement("div");
+        browseHead.className = "wiki-panel-head";
+        const browseTitle = document.createElement("h2");
+        browseTitle.textContent = "Find a page";
+        const browseCopy = document.createElement("p");
+        browseCopy.textContent = "Search the company knowledge built from connected sources.";
+        browseHead.append(browseTitle, browseCopy);
+        const form = document.createElement("form");
+        form.className = "wiki-search-form";
+        const input = document.createElement("input");
+        input.type = "search";
+        input.placeholder = "Search people, projects, decisions…";
+        input.value = st.q || "";
+        input.setAttribute("aria-label", "Search wiki");
+        const submit = document.createElement("button");
+        submit.type = "submit";
+        submit.textContent = "Search";
+        form.append(input, submit);
+        const results = document.createElement("div");
+        results.className = "wiki-results";
+        browse.append(browseHead, form, results);
+
+        const reader = document.createElement("section");
+        reader.className = "wiki-panel";
+        const readerHead = document.createElement("div");
+        readerHead.className = "wiki-panel-head";
+        const readerTitle = document.createElement("h2");
+        readerTitle.textContent = st.slug ? st.slug.replace(/-/g, " ") : "Recent changes";
+        const readerCopy = document.createElement("p");
+        readerCopy.textContent = st.slug ? "Maintained company context" : "What changed across the wiki this week.";
+        readerHead.append(readerTitle, readerCopy);
+        const pageBody = document.createElement("div");
+        pageBody.className = "wiki-page";
+        pageBody.appendChild(emptyPara("Loading wiki…"));
+        reader.append(readerHead, pageBody);
+        layout.append(browse, reader);
+        root.appendChild(layout);
+
+        const openSlug = (slug) => go({ ...st, view: "wiki", slug, q: input.value.trim() || null });
+        form.onsubmit = (event) => {
+          event.preventDefault();
+          go({ ...st, view: "wiki", q: input.value.trim() || null, slug: null });
+        };
+
+        const renderSearch = async () => {
+          results.textContent = "";
+          if (!st.q) return results.appendChild(emptyPara("Search to find a person, project, or topic."));
+          results.appendChild(emptyPara("Searching…"));
+          const response = await api("GET", "/api/wiki/search?q=" + encodeURIComponent(st.q));
+          results.textContent = "";
+          if (!response.ok) return results.appendChild(emptyPara("The wiki could not be reached."));
+          const lines = (response.data && response.data.lines) || [];
+          if (!lines.length) return results.appendChild(emptyPara("No matching pages."));
+          lines.forEach((line) => {
+            const slug = wikiSlugFromLine(line);
+            const row = document.createElement(slug ? "button" : "div");
+            row.className = "wiki-result";
+            row.textContent = line;
+            if (slug) {
+              row.type = "button";
+              row.onclick = () => openSlug(slug);
+            }
+            results.appendChild(row);
+          });
+        };
+
+        const path = st.slug ? "/api/wiki/pages/" + encodeURIComponent(st.slug) : "/api/wiki/recent?days=7";
+        const response = await api("GET", path);
+        pageBody.textContent = "";
+        if (!response.ok)
+          pageBody.appendChild(
+            emptyPara(response.status === 404 ? "Page not found." : "The wiki could not be reached."),
+          );
+        else {
+          const body = response.data.body;
+          if (!body) pageBody.appendChild(emptyPara("Nothing has changed yet."));
+          else if (st.slug) {
+            const rendered = renderWikiMarkdown(body);
+            if (rendered.title) readerTitle.textContent = rendered.title;
+            pageBody.appendChild(rendered.content);
+          } else pageBody.appendChild(renderMarkdown(body));
+        }
+        await renderSearch();
+        viewLoadedAt.wiki = Date.now();
       }
       let slackReq = 0;
       let slackContainers = null;

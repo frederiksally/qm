@@ -73,6 +73,7 @@ const server = createServer(built.app, {
   files: built.files,
   memory: built.memory,
   blobTransfer: built.blobTransfer,
+  ...(built.brainQuery ? { brain: built.brainQuery } : {}),
   sandboxBackend: built.sandbox.profile.backend,
   egressDeclaredEnforcement: built.sandbox.profile.egressEnforcement ?? "none",
   egressEnforcement: effectiveEgressEnforcement(built.sandbox.profile, {

@@ -34,6 +34,7 @@ import {
 import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } from "./admin/slack-installation.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
+import { readWikiPage, readWikiRecent, searchWiki } from "./admin/wiki.ts";
 
 const timed =
   (handle: (ctx: ApiCtx) => void | Promise<void>) =>
@@ -60,6 +61,9 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PUT", path: "/v1/admin/model-providers/:provider", auth: "either", handle: putModelProvider },
   { method: "DELETE", path: "/v1/admin/model-providers/:provider", auth: "either", handle: deleteModelProvider },
   { method: "GET", path: "/v1/admin/custom-providers", auth: "either", handle: getCustomProviders },
+  { method: "GET", path: "/v1/admin/wiki/search", auth: "either", handle: searchWiki },
+  { method: "GET", path: "/v1/admin/wiki/recent", auth: "either", handle: readWikiRecent },
+  { method: "GET", path: "/v1/admin/wiki/pages/:slug", auth: "either", handle: readWikiPage },
   { method: "PUT", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: putCustomProvider },
   { method: "DELETE", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: deleteCustomProvider },
   { method: "PUT", path: "/v1/admin/scopes/:scope/:resource", auth: "either", handle: putScopeConfig },

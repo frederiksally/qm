@@ -375,6 +375,7 @@ export interface BuiltApp {
   channelPolicy: ChannelPolicyStore;
   skillSyncEngine: SkillSyncEngine;
   slackCore: SlackCoreClient;
+  brainQuery?: BrainQueryService;
 }
 
 export function buildApp(
@@ -1513,6 +1514,7 @@ export function buildApp(
     files,
     livenessCache,
     deviceFlowCutover,
+    ...(brainQuery ? { brainQuery } : {}),
     ...(replayDedupe ? { replayDedupe } : {}),
     directory,
     projects,
