@@ -48,6 +48,7 @@ import type { ChannelPolicyStore } from "../surface-cache/channel-policy-store.t
 import type { RateLimiter } from "../ratelimit/rate-limiter.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import type { SlackInstallationStore, SlackSocketAppIdReader } from "../surfaces/slack-installation.ts";
+import type { BrainQueryService } from "../memory/brain-query-service.ts";
 
 export interface ServerDeps {
   production?: boolean;
@@ -126,4 +127,5 @@ export interface ServerDeps {
   secretDrops?: SecretDropStore;
   fireDropResolution?: (drop: DropResolution) => Promise<unknown>;
   blobTransfer?: BlobTransferStore;
+  brain?: BrainQueryService;
 }
