@@ -42,6 +42,21 @@ async function start(withBrain = true) {
 
 const headers = { "x-admin-actor": "admin-alice@default-org" };
 
+test("buildApp exposes a configured brain client to the HTTP server", () => {
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "admin-wiki-wiring-")),
+      brainMcpUrl: "https://wiki.example.test/mcp",
+      brainAuth: "bearer",
+      brainBearerToken: "wiki-reader-token",
+      brainQueryTool: "wiki_search",
+      brainPageTool: "wiki_page",
+      brainRecentTool: "wiki_recent",
+    }),
+  );
+  assert.ok(built.brainQuery);
+});
+
 test("admin wiki reads use the shared brain service and audit the administrator", async () => {
   calls.length = 0;
   const s = await start();
