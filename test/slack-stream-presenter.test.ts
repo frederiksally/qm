@@ -17,7 +17,7 @@ test("delta projector escapes live mentions and markup delimiters", () => {
   assert.equal(projector.push("Hello <@U1> & <https://example.com>"), "Hello &lt;@U1&gt; &amp; &lt;https://example.com&gt;");
 });
 
-test("stream presenter forces a short first flush, checkpoints, and finalizes once", async () => {
+test("stream presenter forces a short first flush, checkpoints, and completes with native stop", async () => {
   const calls: string[] = [];
   const streamer = {
     ts: undefined as string | undefined,
@@ -34,10 +34,11 @@ test("stream presenter forces a short first flush, checkpoints, and finalizes on
     checkpoint: async (ts) => void calls.push(`checkpoint:${ts}`),
     finalize: async (ts, text) => void calls.push(`finalize:${ts}:${text}`),
     remove: async () => {},
+    onDelivered: (ts, text) => void calls.push(`delivered:${ts}:${text}`),
   });
   presenter.pushDelta("short");
   assert.equal(await presenter.finish("short"), "delivered");
-  assert.deepEqual(calls, ["append", "checkpoint:S1", "stop", "finalize:S1:short"]);
+  assert.deepEqual(calls, ["append", "checkpoint:S1", "stop", "delivered:S1:short"]);
 });
 
 test("only the first short text append forces an SDK flush", async () => {
@@ -107,6 +108,53 @@ test("an uncheckpointed stream is removed before normal-post fallback", async ()
   assert.deepEqual(calls, ["stop", "remove:S1"]);
 });
 
+test("a stream that cannot be removed after terminal mismatch is orphaned", async () => {
+  const calls: string[] = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append() {
+      this.ts = "S1";
+    },
+    async stop() {
+      calls.push("stop");
+    },
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async () => {},
+    finalize: async () => {},
+    remove: async () => {
+      calls.push("remove");
+      throw new Error("delete failed");
+    },
+  });
+  presenter.pushDelta("draft");
+  assert.equal(await presenter.finish("final", undefined, "final"), "orphaned");
+  assert.deepEqual(calls, ["stop", "remove"]);
+});
+
+test("an empty terminal answer removes stale streamed draft text", async () => {
+  const calls: string[] = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append() {
+      this.ts = "S1";
+    },
+    async stop() {
+      calls.push("stop");
+    },
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async () => {},
+    finalize: async () => {},
+    remove: async () => void calls.push("remove"),
+  });
+  presenter.pushDelta("draft");
+  assert.equal(await presenter.finish("", undefined, ""), "none");
+  assert.deepEqual(calls, ["stop", "remove"]);
+});
+
 test("markdown text fields split at Unicode-safe 12000-character boundaries", async () => {
   const appends: string[] = [];
   const streamer = {
@@ -123,8 +171,9 @@ test("markdown text fields split at Unicode-safe 12000-character boundaries", as
     finalize: async () => {},
     remove: async () => {},
   });
-  presenter.pushDelta(`${"a".repeat(11_999)}😀b`);
-  assert.equal(await presenter.finish("done"), "delivered");
+  const text = `${"a".repeat(11_999)}😀b`;
+  presenter.pushDelta(text);
+  assert.equal(await presenter.finish(text), "delivered");
   assert.deepEqual(appends.map((value) => value.length), [11_999, 3]);
   assert.equal(appends.join(""), `${"a".repeat(11_999)}😀b`);
 });
@@ -145,8 +194,9 @@ test("live text applies the same 40000-character ceiling as terminal delivery", 
     finalize: async () => {},
     remove: async () => {},
   });
-  presenter.pushDelta(`${"a".repeat(39_999)}😀tail`);
-  assert.equal(await presenter.finish("done"), "delivered");
+  const text = `${"a".repeat(39_999)}😀tail`;
+  presenter.pushDelta(text);
+  assert.equal(await presenter.finish(text), "none");
   assert.equal(appends.join("").length, 40_000);
   assert.equal(appends.join("").endsWith("…"), true);
 });
@@ -169,7 +219,7 @@ test("a delta after exactly 40000 live characters cannot overflow the ceiling", 
   });
   presenter.pushDelta("a".repeat(40_000));
   presenter.pushDelta("overflow");
-  assert.equal(await presenter.finish("done"), "delivered");
+  assert.equal(await presenter.finish(`${"a".repeat(40_000)}overflow`), "delivered");
   assert.equal(appends.join("").length, 40_000);
 });
 
@@ -215,7 +265,7 @@ test("a post-flush finalize failure never permits a duplicate fallback post", as
     remove: async () => {},
   });
   presenter.pushDelta("partial");
-  assert.equal(await presenter.finish("final"), "recoverable");
+  assert.equal(await presenter.finish("partial"), "recoverable");
 });
 
 test("discard removes an opened stream and leaves a never-opened stream alone", async () => {

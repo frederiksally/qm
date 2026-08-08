@@ -137,6 +137,20 @@ test("runResultDelivery carries an unfinished stream checkpoint into the destina
   assert.deepEqual(d?.destination.stream, { channel: "D1", ts: "171.003", unfinished: true });
 });
 
+test("runResultDelivery preserves a completed native stream without rewriting it", () => {
+  const delivery = runResultDelivery(
+    run({
+      deliveryState: {
+        editRef: "171.004",
+        surface: { kind: "stream", channel: "D1", ts: "171.004", complete: true },
+      },
+    }),
+  );
+  assert.equal(delivery?.destination.editRef, "171.004");
+  assert.equal(delivery?.destination.stream, undefined);
+  assert.equal(delivery?.destination.preserveMessage, true);
+});
+
 test("runResultDelivery preserves approval cards for an unfinished stream", () => {
   const pendingApprovals = [{ requestId: "A1", command: "deploy", reason: "approval required" }];
   const d = runResultDelivery(

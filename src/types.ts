@@ -167,6 +167,7 @@ export interface Destination {
   onBehalfOf?: string;
   editRef?: string;
   stream?: { channel: string; ts: string; unfinished: true };
+  preserveMessage?: true;
   pendingApprovals?: PendingApproval[];
   taskList?: Array<{
     id: string;
