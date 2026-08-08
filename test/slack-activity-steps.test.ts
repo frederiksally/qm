@@ -24,6 +24,11 @@ test("activity labels never expose payload contents", () => {
   }
 });
 
+test("low-level internal tools do not become user-facing activity", () => {
+  for (const tool of ["execute", "read", "write", "history", "memory", "guidance"])
+    assert.equal(activityLabel(entry(1, "tool_call", { tool })), undefined);
+});
+
 test("internal context activity uses user-centered language", () => {
   assert.deepEqual(
     ["query_brain", "brain_page", "brain_recent"].map((tool, index) =>
@@ -65,7 +70,8 @@ test("every Pi tool schema action and approval-gate form has an explicit payload
           recipient: sentinel,
         }),
       );
-      if (tool.name === "stay_silent" || tool.name === "finish_silently") assert.equal(label, undefined);
+      if (["execute", "read", "write", "history", "memory", "guidance", "stay_silent", "finish_silently"].includes(tool.name))
+        assert.equal(label, undefined);
       else assert.ok(label, `${tool.name}:${action ?? "approval-gate"}`);
       assert.doesNotMatch(label ?? "", new RegExp(sentinel));
     }
@@ -87,7 +93,7 @@ test("projection preserves distinct calls, order, terminal states, and approval 
   assert.deepEqual(projectActivitySteps(calls, projected), projected);
 });
 
-test("the strict tool gate result remains waiting rather than failed", () => {
+test("the strict gate for a hidden internal tool stays hidden", () => {
   const projected = projectActivitySteps([
     entry(1, "tool_call", { tool: "execute", callId: "gate-1", blocked: "needs_approval" }),
     entry(2, "tool_result", {
@@ -98,5 +104,5 @@ test("the strict tool gate result remains waiting rather than failed", () => {
       result: "private payload",
     }),
   ]);
-  assert.deepEqual(projected, [{ id: "gate-1", title: "Running a command", state: "waiting_approval" }]);
+  assert.deepEqual(projected, []);
 });

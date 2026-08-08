@@ -233,6 +233,7 @@ class FakeCore implements SlackCoreClient {
   private runHooks: any;
   private runGate: Promise<void> | undefined;
   private releaseRun: (() => void) | undefined;
+  steeredDelayMs = 0;
   readonly modelChangeListeners: Array<(scope: any) => void> = [];
 
   async externalSlackParticipants(): Promise<boolean> {
@@ -270,6 +271,7 @@ class FakeCore implements SlackCoreClient {
       // it in as a steer and answers with the LIVE run's id (src/api/app-turn.ts).
       const steered = this.heldRunClaimed;
       this.heldRunClaimed = true;
+      if (steered && this.steeredDelayMs) await new Promise((resolve) => setTimeout(resolve, this.steeredDelayMs));
       return { status: "queued", runId: this.queuedRunId, ...(steered ? { steered: true as const } : {}) };
     }
     return this.result;
@@ -502,19 +504,66 @@ test("a queued acknowledgment is updated into a refusal", async () => {
   }
 });
 
-test("a long Agent View DM uses and clears native status on its rooted thread", async () => {
+test("a long Agent View DM never creates a second native status surface", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
     const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "work", ts: "100.3" });
     await waitFor(() => f.core.polled.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 2_100));
-    assert.equal(f.client.statuses[0]?.thread_ts, "100.3");
-    assert.equal(f.client.statuses[0]?.status, "Thinking…");
+    assert.equal(f.client.streamAppends.length, 1);
+    assert.equal(f.client.streamAppends[0]?.body.chunks?.[0]?.title, "Working on it");
+    assert.equal(f.client.streamAppends[0]?.body.chunks?.[0]?.status, "in_progress");
     f.core.finishRun({ status: "ok", reply: "done" });
     await turn;
-    assert.equal(f.client.statuses.at(-1)?.status, "");
+    assert.deepEqual(f.client.statuses, []);
     assert.deepEqual(f.client.reactionsAdded, []);
+    assert.ok(
+      f.client.streamAppends.some(
+        (append) => append.body.chunks?.[0]?.id === "current_activity" && append.body.chunks?.[0]?.status === "complete",
+      ),
+    );
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a delayed steered DM removes its single activity surface", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const first = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "first", ts: "100.31" });
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.steeredDelayMs = 2_100;
+    await f.app.emitMessage({
+      channel: "D1",
+      channel_type: "im",
+      user: "U1",
+      text: "more",
+      ts: "100.32",
+      thread_ts: "100.31",
+    });
+    assert.equal(f.client.streamAppends.at(-1)?.body.chunks?.[0]?.title, "Working on it");
+    assert.equal(f.client.deletes.length, 1);
+    f.core.finishRun({ status: "ok", reply: "done" });
+    await first;
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a delayed silent DM cancels activity before discarding its stream", async () => {
+  const f = await fixture();
+  try {
+    f.core.holdRun("R1");
+    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "quiet", ts: "100.33" });
+    await waitFor(() => f.core.polled.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    f.core.finishRun({ status: "silent" });
+    await turn;
+    assert.equal(f.client.streamAppends.at(-1)?.body.chunks?.[0]?.title, "Working on it");
+    assert.equal(f.client.deletes.length, 1);
+    assert.equal(f.client.posts.length, 0);
   } finally {
     await f.stop();
   }
@@ -565,8 +614,9 @@ test("Agent View DM activity and final text share one native stream", async () =
     assert.equal(f.client.posts.length, 0);
     assert.equal(f.client.streamStops[0]?.body.markdown_text, "Here is the result.");
     assert.ok(f.client.streamAppends.some((append) => append.body.chunks?.[0]?.type === "task_update"));
+    assert.equal(f.client.streamAppends[0]?.args.task_display_mode, "dense");
     assert.deepEqual(f.client.titles, []);
-    assert.ok(f.client.statuses.length === 0 || f.client.statuses.at(-1)?.status === "");
+    assert.deepEqual(f.client.statuses, []);
   } finally {
     await f.stop();
   }

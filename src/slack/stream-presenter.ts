@@ -1,7 +1,6 @@
 import type { SlackActivityStep } from "./activity-steps.ts";
 import { createSlackDeltaProjector } from "./stream-projector.ts";
 import { sleep } from "../util/async.ts";
-import { createHash } from "node:crypto";
 
 interface Streamer {
   readonly ts?: string;
@@ -50,11 +49,6 @@ const taskStatus = (state: SlackActivityStep["state"]): "pending" | "in_progress
   return "complete";
 };
 
-const taskId = (step: SlackActivityStep): string => {
-  if (step.id && step.id.length <= 255) return step.id;
-  return `task:${createHash("sha256").update(`${step.id}\0${step.title}`).digest("hex")}`;
-};
-
 const taskTitle = (title: string): string => Array.from(title).slice(0, 256).join("");
 
 export function createStreamPresenter(deps: {
@@ -74,6 +68,7 @@ export function createStreamPresenter(deps: {
   let liveTextLength = 0;
   let liveTextTruncated = false;
   let liveText = "";
+  let currentActivity: SlackActivityStep | undefined;
   const accepted = (text: string): string => {
     liveText += text;
     return text;
@@ -148,17 +143,42 @@ export function createStreamPresenter(deps: {
       append(boundLiveText(projector.push(delta)));
     },
     pushActivity(steps) {
+      const step =
+        [...steps]
+          .reverse()
+          .find(({ state }) => state === "pending" || state === "in_progress" || state === "waiting_approval") ??
+        steps.at(-1);
+      if (!step) return;
+      currentActivity = step;
       append(
         "",
-        steps.map((step) => ({
+        [
+          {
           type: "task_update",
-          id: taskId(step),
+          id: "current_activity",
           title: taskTitle(step.title),
           status: taskStatus(step.state),
-        })),
+          },
+        ],
       );
     },
     async finish(text, blocks, terminalStreamText = text, recoveryBlocks) {
+      if (
+        currentActivity &&
+        (currentActivity.state === "pending" ||
+          currentActivity.state === "in_progress" ||
+          currentActivity.state === "waiting_approval")
+      ) {
+        currentActivity = { ...currentActivity, state: "completed" };
+        append("", [
+          {
+            type: "task_update",
+            id: "current_activity",
+            title: taskTitle(currentActivity.title),
+            status: "complete",
+          },
+        ]);
+      }
       append(boundLiveText(projector.finish()));
       await chain;
       const terminalText = terminalStreamText === null ? liveText || text : terminalStreamText;
