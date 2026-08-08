@@ -11,15 +11,15 @@
       "messages_tab_read_only_enabled": false
     },
     "agent_view": {
-      "agent_description": "A workspace agent that searches company knowledge, works with files, manages memory, and completes operational tasks.",
+      "agent_description": "InterAgent helps you find relevant context, understand recent work, work with files, and complete operational tasks.",
       "suggested_prompts": [
         {
-          "title": "Search company knowledge",
-          "message": "Search our company knowledge for the latest information relevant to my work."
+          "title": "Catch me up",
+          "message": "Summarize the recent work and decisions that matter to me."
         },
         {
-          "title": "Summarize recent work",
-          "message": "Summarize the recent work and decisions that matter to me."
+          "title": "Find relevant context",
+          "message": "Find the information most relevant to what I'm working on and summarize it."
         },
         {
           "title": "Help with a task",
@@ -64,6 +64,7 @@
   "settings": {
     "event_subscriptions": {
       "bot_events": [
+        "app_home_opened",
         "app_mention",
         "message.im",
         "message.channels",
