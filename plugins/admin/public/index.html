@@ -3749,75 +3749,327 @@
         }
       }
       .wiki-layout {
+        --wiki-ink: #17211b;
+        --wiki-muted: #68736c;
+        --wiki-accent: #176c4b;
+        --wiki-accent-soft: #e9f3ed;
+        --wiki-paper: #fffefa;
         display: grid;
-        grid-template-columns: minmax(260px, 0.75fr) minmax(0, 1.6fr);
-        gap: 18px;
+        grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
+        gap: 20px;
+        align-items: start;
       }
       .wiki-panel {
         min-width: 0;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: var(--surface);
+        overflow: hidden;
+        border: 1px solid color-mix(in srgb, var(--border) 82%, #8d998f);
+        border-radius: 16px;
+        background: var(--wiki-paper);
+        box-shadow: 0 14px 40px rgba(31, 42, 34, 0.06);
+      }
+      .wiki-browse {
+        position: sticky;
+        top: calc(var(--header-total-h) + 18px);
+        max-height: calc(100vh - var(--header-total-h) - 36px);
+        display: flex;
+        flex-direction: column;
       }
       .wiki-panel-head {
-        padding: 16px 18px;
-        border-bottom: 1px solid var(--border);
+        padding: 22px 22px 18px;
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+        background: linear-gradient(145deg, rgba(233, 243, 237, 0.68), rgba(255, 254, 250, 0) 74%);
       }
       .wiki-panel-head h2 {
         margin: 0;
-        font-size: 15px;
+        color: var(--wiki-ink);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(21px, 2vw, 27px);
+        font-weight: 500;
+        letter-spacing: -0.025em;
+        line-height: 1.15;
       }
       .wiki-panel-head p {
-        margin: 5px 0 0;
-        color: var(--muted);
-        font-size: 12px;
+        max-width: 680px;
+        margin: 8px 0 0;
+        color: var(--wiki-muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .wiki-eyebrow {
+        display: block;
+        margin-bottom: 7px;
+        color: var(--wiki-accent);
+        font-size: 10px;
+        font-weight: 750;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
       }
       .wiki-search-form {
         display: flex;
-        gap: 8px;
-        padding: 16px 18px;
+        gap: 9px;
+        padding: 16px 18px 14px;
       }
       .wiki-search-form input {
         flex: 1;
         min-width: 0;
+        min-height: 42px;
+        border-color: #ccd5ce;
+        border-radius: 10px;
+        background: #fff;
+        font-size: 14px;
+      }
+      .wiki-search-form button {
+        min-height: 42px;
+        border-color: var(--wiki-accent);
+        border-radius: 10px;
+        background: var(--wiki-accent);
+        color: #fff;
+        font-weight: 650;
+      }
+      .wiki-search-form button:hover {
+        background: #0f583c;
+      }
+      .wiki-search-summary {
+        min-height: 20px;
+        padding: 0 19px 12px;
+        color: var(--wiki-muted);
+        font-size: 11.5px;
       }
       .wiki-results {
+        min-height: 120px;
+        overflow-y: auto;
         border-top: 1px solid var(--border);
       }
       .wiki-result {
-        display: block;
+        position: relative;
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr) 18px;
+        gap: 11px;
+        align-items: start;
         width: 100%;
-        padding: 13px 18px;
+        padding: 15px 17px;
         border: 0;
         border-bottom: 1px solid var(--border);
         border-radius: 0;
         background: transparent;
         color: inherit;
         text-align: left;
-        line-height: 1.45;
+        line-height: 1.35;
       }
       .wiki-result:hover {
-        background: var(--subtle);
+        background: #f4f8f4;
+      }
+      .wiki-result[aria-current="page"] {
+        background: var(--wiki-accent-soft);
+      }
+      .wiki-result-icon {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        background: #e9eee9;
+        color: #47534b;
+        font-family: Georgia, serif;
+        font-size: 14px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .wiki-result[aria-current="page"] .wiki-result-icon {
+        background: var(--wiki-accent);
+        color: #fff;
+      }
+      .wiki-result-copy {
+        min-width: 0;
+      }
+      .wiki-result-name {
+        display: block;
+        overflow: hidden;
+        color: var(--wiki-ink);
+        font-size: 13.5px;
+        font-weight: 680;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wiki-result-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px 8px;
+        margin-top: 3px;
+        color: var(--wiki-muted);
+        font-size: 10.5px;
+        text-transform: capitalize;
+      }
+      .wiki-result-summary {
+        display: -webkit-box;
+        margin-top: 7px;
+        overflow: hidden;
+        color: #4e5a52;
+        font-size: 12px;
+        line-height: 1.45;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+      }
+      .wiki-result-arrow {
+        padding-top: 8px;
+        color: #8b978e;
+        font-size: 18px;
       }
       .wiki-result:last-child {
         border-bottom: 0;
       }
+      .wiki-reader-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      .wiki-reader-head-copy {
+        min-width: 0;
+      }
+      .wiki-home-button {
+        flex: 0 0 auto;
+        min-height: 36px;
+        padding: 7px 11px;
+        border-color: #ccd5ce;
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--wiki-accent);
+        font-size: 12px;
+        font-weight: 650;
+      }
       .wiki-page {
-        padding: 22px 24px;
+        min-height: 480px;
+        padding: clamp(24px, 4vw, 48px);
       }
       .wiki-page .message-body {
-        max-width: 760px;
+        max-width: 780px;
+        color: #29342d;
+        font-size: 14px;
+        line-height: 1.72;
+      }
+      .wiki-page .message-body > h2 {
+        margin: 36px 0 12px;
+        padding-top: 21px;
+        border-top: 1px solid #e2e8e3;
+        color: var(--wiki-ink);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 20px;
+        font-weight: 500;
+        letter-spacing: -0.015em;
+      }
+      .wiki-page .message-body > h2:first-child {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: 0;
+      }
+      .wiki-heading-link {
+        margin: -6px -8px;
+        padding: 6px 8px;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        letter-spacing: inherit;
+        text-align: left;
+      }
+      .wiki-heading-link:hover {
+        color: var(--wiki-accent);
+        text-decoration: underline;
+        text-underline-offset: 4px;
+      }
+      .wiki-page .message-body > h3 {
+        margin: 25px 0 8px;
+        color: var(--wiki-ink);
+        font-size: 13px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .wiki-page .message-body a {
+        color: var(--wiki-accent);
+        text-underline-offset: 3px;
+      }
+      .wiki-page .message-body li + li {
+        margin-top: 8px;
+      }
+      .wiki-page details {
+        margin-top: 28px;
+        padding: 13px 15px;
+        border: 1px solid #dce4dd;
+        border-radius: 10px;
+        background: #f8faf8;
+      }
+      .wiki-page details summary {
+        color: var(--wiki-accent);
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
       }
       .wiki-placeholder {
+        display: grid;
+        place-items: center;
+        min-height: 220px;
         padding: 32px 24px;
-        color: var(--muted);
+        color: var(--wiki-muted);
+        text-align: center;
+      }
+      .wiki-empty-title {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--wiki-ink);
+        font-family: Georgia, serif;
+        font-size: 18px;
+      }
+      .wiki-skeleton {
+        display: grid;
+        gap: 12px;
+        padding: 4px 0;
+      }
+      .wiki-skeleton span {
+        height: 13px;
+        border-radius: 7px;
+        background: linear-gradient(90deg, #eef1ee 20%, #f8faf8 50%, #eef1ee 80%);
+        background-size: 220% 100%;
+        animation: wiki-shimmer 1.3s ease-in-out infinite;
+      }
+      .wiki-skeleton span:nth-child(2) {
+        width: 86%;
+      }
+      .wiki-skeleton span:nth-child(3) {
+        width: 64%;
+      }
+      @keyframes wiki-shimmer {
+        to {
+          background-position: -220% 0;
+        }
       }
       .wiki-recent {
         margin-top: 18px;
       }
+      @media (prefers-reduced-motion: reduce) {
+        .wiki-skeleton span {
+          animation: none;
+        }
+      }
       @media (max-width: 760px) {
         .wiki-layout {
           grid-template-columns: 1fr;
+        }
+        .wiki-browse {
+          position: static;
+          max-height: none;
+        }
+        .wiki-results {
+          max-height: 380px;
+        }
+        .wiki-reader-head {
+          display: block;
+        }
+        .wiki-home-button {
+          margin-top: 14px;
+        }
+        .wiki-page {
+          min-height: 360px;
         }
       }
     </style>
@@ -12117,6 +12369,54 @@
         return slug.length <= 200 && /^[\p{L}\p{N}][\p{L}\p{N}-]*$/u.test(slug) ? slug : null;
       }
 
+      function wikiSearchHitFromLine(line) {
+        const text = String(line || "").trim();
+        const match = text.match(/^(.*?) · ([^·]+) · slug:([^·]+) · last seen (.*?)(?: — (.*))?$/u);
+        const slug = wikiSlugFromLine(text);
+        if (!match || !slug)
+          return { slug, name: slug ? slug.replace(/-/g, " ") : text, type: "page", lastSeen: null, summary: "" };
+        return {
+          slug,
+          name: match[1].trim(),
+          type: match[2].trim(),
+          lastSeen: match[4].trim() === "never" ? null : match[4].trim(),
+          summary: (match[5] || "").trim(),
+        };
+      }
+
+      function wikiFreshness(value) {
+        if (!value) return "No recent activity";
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return value;
+        const days = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+        if (days === 0) return "Updated today";
+        if (days === 1) return "Updated yesterday";
+        if (days < 30) return `Updated ${days} days ago`;
+        return `Updated ${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+      }
+
+      function wikiEmpty(title, copy) {
+        const wrap = document.createElement("div");
+        wrap.className = "wiki-placeholder";
+        const body = document.createElement("div");
+        const heading = document.createElement("strong");
+        heading.className = "wiki-empty-title";
+        heading.textContent = title;
+        const text = document.createElement("span");
+        text.textContent = copy;
+        body.append(heading, text);
+        wrap.appendChild(body);
+        return wrap;
+      }
+
+      function wikiLoading() {
+        const skeleton = document.createElement("div");
+        skeleton.className = "wiki-skeleton";
+        skeleton.setAttribute("aria-label", "Loading wiki");
+        skeleton.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+        return skeleton;
+      }
+
       function wikiMarkdownParts(text) {
         const lines = String(text || "")
           .replace(/\r\n/g, "\n")
@@ -12148,36 +12448,78 @@
         return { title, parts };
       }
 
-      function renderWikiMarkdown(text) {
+      function renderWikiMarkdown(text, options = {}) {
         const parsed = wikiMarkdownParts(text);
         const content = document.createElement("div");
         content.className = "message-body";
-        for (const part of parsed.parts) {
-          if (part.kind === "body") content.append(...renderMarkdown(part.text).children);
+        const appendPart = (target, part) => {
+          if (part.kind === "body") target.append(...renderMarkdown(part.text).children);
           else {
             const heading = document.createElement(part.level === 2 ? "h2" : "h3");
-            heading.textContent = part.text;
-            content.appendChild(heading);
+            const recentEntity = options.onEntity && part.level === 2 ? part.text.match(/^(.+?)\s+·\s+(.+)$/u) : null;
+            if (recentEntity) {
+              const link = document.createElement("button");
+              link.type = "button";
+              link.className = "wiki-heading-link";
+              link.textContent = recentEntity[1].trim() + " →";
+              link.setAttribute("aria-label", `Find the wiki page for ${recentEntity[1].trim()}`);
+              link.onclick = () => options.onEntity(recentEntity[1].trim());
+              heading.appendChild(link);
+            } else heading.textContent = part.text;
+            target.appendChild(heading);
           }
+        };
+        for (let i = 0; i < parsed.parts.length; i++) {
+          const part = parsed.parts[i];
+          const sourceSection =
+            part.kind === "heading" && /^(sources?|evidence|provenance|references?)$/i.test(part.text.trim());
+          if (!sourceSection) {
+            appendPart(content, part);
+            continue;
+          }
+          const details = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = "Sources and provenance";
+          details.appendChild(summary);
+          while (i + 1 < parsed.parts.length) {
+            const next = parsed.parts[i + 1];
+            if (next.kind === "heading" && next.level === 2) break;
+            appendPart(details, next);
+            i++;
+          }
+          content.appendChild(details);
         }
         return { title: parsed.title, content };
       }
 
+      let wikiReq = 0;
+      async function wikiApi(path) {
+        try {
+          return await api("GET", path);
+        } catch {
+          return { ok: false, status: 0, data: null };
+        }
+      }
+
       async function renderWiki(st) {
+        const requestId = ++wikiReq;
         defaultShell();
         const root = $("view-data");
         root.textContent = "";
         const layout = document.createElement("div");
         layout.className = "wiki-layout";
         const browse = document.createElement("section");
-        browse.className = "wiki-panel";
+        browse.className = "wiki-panel wiki-browse";
         const browseHead = document.createElement("div");
         browseHead.className = "wiki-panel-head";
+        const browseEyebrow = document.createElement("span");
+        browseEyebrow.className = "wiki-eyebrow";
+        browseEyebrow.textContent = "Company knowledge";
         const browseTitle = document.createElement("h2");
-        browseTitle.textContent = "Find a page";
+        browseTitle.textContent = "Find what matters";
         const browseCopy = document.createElement("p");
-        browseCopy.textContent = "Search the company knowledge built from connected sources.";
-        browseHead.append(browseTitle, browseCopy);
+        browseCopy.textContent = "People, projects, decisions, risks, and the context behind them.";
+        browseHead.append(browseEyebrow, browseTitle, browseCopy);
         const form = document.createElement("form");
         form.className = "wiki-search-form";
         const input = document.createElement("input");
@@ -12189,22 +12531,41 @@
         submit.type = "submit";
         submit.textContent = "Search";
         form.append(input, submit);
+        const searchSummary = document.createElement("div");
+        searchSummary.className = "wiki-search-summary";
+        searchSummary.setAttribute("aria-live", "polite");
         const results = document.createElement("div");
         results.className = "wiki-results";
-        browse.append(browseHead, form, results);
+        browse.append(browseHead, form, searchSummary, results);
 
         const reader = document.createElement("section");
         reader.className = "wiki-panel";
         const readerHead = document.createElement("div");
-        readerHead.className = "wiki-panel-head";
+        readerHead.className = "wiki-panel-head wiki-reader-head";
+        const readerHeadCopy = document.createElement("div");
+        readerHeadCopy.className = "wiki-reader-head-copy";
+        const readerEyebrow = document.createElement("span");
+        readerEyebrow.className = "wiki-eyebrow";
+        readerEyebrow.textContent = st.slug ? "Knowledge page" : "Briefing";
         const readerTitle = document.createElement("h2");
         readerTitle.textContent = st.slug ? st.slug.replace(/-/g, " ") : "Recent changes";
         const readerCopy = document.createElement("p");
-        readerCopy.textContent = st.slug ? "Maintained company context" : "What changed across the wiki this week.";
-        readerHead.append(readerTitle, readerCopy);
+        readerCopy.textContent = st.slug
+          ? "A maintained view of the current state and meaningful history."
+          : "The meaningful changes from the last seven days, without the message-by-message noise.";
+        readerHeadCopy.append(readerEyebrow, readerTitle, readerCopy);
+        readerHead.appendChild(readerHeadCopy);
+        if (st.slug) {
+          const home = document.createElement("button");
+          home.type = "button";
+          home.className = "wiki-home-button";
+          home.textContent = "← Recent changes";
+          home.onclick = () => go({ ...st, view: "wiki", slug: null });
+          readerHead.appendChild(home);
+        }
         const pageBody = document.createElement("div");
         pageBody.className = "wiki-page";
-        pageBody.appendChild(emptyPara("Loading wiki…"));
+        pageBody.appendChild(wikiLoading());
         reader.append(readerHead, pageBody);
         layout.append(browse, reader);
         root.appendChild(layout);
@@ -12217,43 +12578,97 @@
 
         const renderSearch = async () => {
           results.textContent = "";
-          if (!st.q) return results.appendChild(emptyPara("Search to find a person, project, or topic."));
-          results.appendChild(emptyPara("Searching…"));
-          const response = await api("GET", "/api/wiki/search?q=" + encodeURIComponent(st.q));
+          searchSummary.textContent = "";
+          if (!st.q) {
+            results.appendChild(wikiEmpty("Start with a name or topic", "Search across maintained company knowledge."));
+            return;
+          }
+          results.appendChild(wikiLoading());
+          searchSummary.textContent = `Searching for “${st.q}”…`;
+          const response = await wikiApi("/api/wiki/search?q=" + encodeURIComponent(st.q) + "&limit=30");
+          if (requestId !== wikiReq) return;
           results.textContent = "";
-          if (!response.ok) return results.appendChild(emptyPara("The wiki could not be reached."));
+          if (!response.ok) {
+            searchSummary.textContent = "Search unavailable";
+            results.appendChild(wikiEmpty("Search could not connect", "Try again in a moment. Your query is still here."));
+            return;
+          }
           const lines = (response.data && response.data.lines) || [];
-          if (!lines.length) return results.appendChild(emptyPara("No matching pages."));
+          searchSummary.textContent = lines.length === 1 ? "1 result" : `${lines.length} results`;
+          if (!lines.length) {
+            results.appendChild(wikiEmpty("No matching pages", "Try a person, project, decision, or a broader phrase."));
+            return;
+          }
           lines.forEach((line) => {
-            const slug = wikiSlugFromLine(line);
-            const row = document.createElement(slug ? "button" : "div");
+            const hit = wikiSearchHitFromLine(line);
+            const row = document.createElement(hit.slug ? "button" : "div");
             row.className = "wiki-result";
-            row.textContent = line;
-            if (slug) {
+            if (hit.slug === st.slug) row.setAttribute("aria-current", "page");
+            const icon = document.createElement("span");
+            icon.className = "wiki-result-icon";
+            icon.textContent = hit.type.slice(0, 1) || "·";
+            const copy = document.createElement("span");
+            copy.className = "wiki-result-copy";
+            const name = document.createElement("span");
+            name.className = "wiki-result-name";
+            name.textContent = hit.name;
+            const meta = document.createElement("span");
+            meta.className = "wiki-result-meta";
+            const type = document.createElement("span");
+            type.textContent = hit.type;
+            const freshness = document.createElement("span");
+            freshness.textContent = wikiFreshness(hit.lastSeen);
+            meta.append(type, freshness);
+            copy.append(name, meta);
+            if (hit.summary) {
+              const summary = document.createElement("span");
+              summary.className = "wiki-result-summary";
+              summary.textContent = hit.summary;
+              copy.appendChild(summary);
+            }
+            const arrow = document.createElement("span");
+            arrow.className = "wiki-result-arrow";
+            arrow.setAttribute("aria-hidden", "true");
+            arrow.textContent = "›";
+            row.append(icon, copy, arrow);
+            if (hit.slug) {
               row.type = "button";
-              row.onclick = () => openSlug(slug);
+              row.onclick = () => openSlug(hit.slug);
             }
             results.appendChild(row);
           });
         };
 
+        const searchPromise = renderSearch();
         const path = st.slug ? "/api/wiki/pages/" + encodeURIComponent(st.slug) : "/api/wiki/recent?days=7";
-        const response = await api("GET", path);
+        const response = await wikiApi(path);
+        if (requestId !== wikiReq) return;
         pageBody.textContent = "";
-        if (!response.ok)
+        if (!response.ok) {
+          const missing = response.status === 404;
           pageBody.appendChild(
-            emptyPara(response.status === 404 ? "Page not found." : "The wiki could not be reached."),
+            wikiEmpty(
+              missing ? "Page not found" : "Wiki temporarily unavailable",
+              missing ? "This page may have been merged, renamed, or archived." : "The reader could not connect. Try again in a moment.",
+            ),
           );
+        }
         else {
           const body = response.data.body;
-          if (!body) pageBody.appendChild(emptyPara("Nothing has changed yet."));
-          else if (st.slug) {
-            const rendered = renderWikiMarkdown(body);
+          if (!body) pageBody.appendChild(wikiEmpty("Nothing here yet", "The wiki will fill in as meaningful work is observed."));
+          else {
+            const rendered = renderWikiMarkdown(
+              body,
+              st.slug
+                ? {}
+                : { onEntity: (name) => go({ ...st, view: "wiki", q: name, slug: null }) },
+            );
             if (rendered.title) readerTitle.textContent = rendered.title;
             pageBody.appendChild(rendered.content);
-          } else pageBody.appendChild(renderMarkdown(body));
+          }
         }
-        await renderSearch();
+        await searchPromise;
+        if (requestId !== wikiReq) return;
         viewLoadedAt.wiki = Date.now();
       }
       let slackReq = 0;
