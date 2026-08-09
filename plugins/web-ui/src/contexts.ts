@@ -116,6 +116,7 @@ let contextsFetchSeq = 0;
 let contextsQuery = "";
 let contextsWorkspaceFilter: "active" | "all" = "active";
 let pendingProject: string | null = null;
+let pendingProjectGeneration = 0;
 
 export function pendingProjectLink(): string | null {
   return pendingProject;
@@ -123,6 +124,7 @@ export function pendingProjectLink(): string | null {
 
 export function clearPendingProjectLink(): void {
   pendingProject = null;
+  pendingProjectGeneration++;
 }
 
 function pendingProjectNotice(slug: string): string {
@@ -131,7 +133,9 @@ function pendingProjectNotice(slug: string): string {
 }
 
 export async function openProjectDeepLink(slug: string): Promise<void> {
+  const generation = pendingProjectGeneration;
   const scope = resolveProjectScope(await ensureContexts(), slug);
+  if (generation !== pendingProjectGeneration) return;
   if (!scope) {
     pendingProject = slug;
     return;
@@ -181,7 +185,7 @@ export function resetContextsState(): void {
   createProjectOpener = null;
   contextsQuery = "";
   contextsWorkspaceFilter = "active";
-  pendingProject = null;
+  clearPendingProjectLink();
 }
 
 export async function renderContexts(): Promise<void> {
@@ -201,7 +205,7 @@ export async function renderContexts(): Promise<void> {
   if (pendingProject) {
     await openProjectDeepLink(pendingProject);
     if (seq !== appState.viewRenderSeq || appState.currentView !== "contexts") return;
-    if (!pendingProject) return;
+    syncUrlFromState();
   }
   if (
     contextsState.selected &&
@@ -346,10 +350,9 @@ function drawContexts(): void {
 }
 
 function gridTpl(): TemplateResult {
+  const loading = contextsLoading && contextsState.list.length === 0 ? "Loading projects…" : "";
   const status =
-    contextsNotice ||
-    (pendingProject ? pendingProjectNotice(pendingProject) : "") ||
-    (contextsLoading && contextsState.list.length === 0 ? "Loading projects…" : "");
+    contextsNotice || (pendingProject && !contextsLoading ? pendingProjectNotice(pendingProject) : "") || loading;
   const q = contextsQuery.trim().toLowerCase();
   const matches = (context: CoreContext) => {
     const meta = contextMeta(context);

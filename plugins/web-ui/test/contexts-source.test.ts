@@ -83,7 +83,7 @@ test("a project deep link that cannot be resolved says so instead of silently li
   assert.match(open, /selectScope\(scope\)/, "a resolved link goes through the shared scope selection");
 
   const grid = source.match(/function gridTpl\(\)[^]*?\n\}/)?.[0] ?? "";
-  assert.match(grid, /pendingProject \? pendingProjectNotice\(pendingProject\) : ""/);
+  assert.match(grid, /pendingProject && !contextsLoading \? pendingProjectNotice\(pendingProject\) : ""/);
   assert.match(source, /isn't open to you/);
 });
 
@@ -95,10 +95,10 @@ test("selecting a scope by link or by click clears the pending link through one 
   const select = source.match(/function selectContext\([^]*?\n\}/)?.[0] ?? "";
   assert.match(select, /selectScope\(scopeId\)/, "click selection reuses the same helper");
   const reset = source.match(/export function resetContextsState\([^]*?\n\}/)?.[0] ?? "";
-  assert.match(reset, /pendingProject = null/);
+  assert.match(reset, /clearPendingProjectLink\(\)/);
 });
 
-test("a refresh retries the pending project link under the view's render guard", () => {
+test("a refresh retries the pending link and, when it resolves, still loads and draws the project", () => {
   const renderFn = source.match(/export async function renderContexts\([^]*?\n\}/)?.[0] ?? "";
   assert.match(renderFn, /if \(pendingProject\) \{[^]*?await openProjectDeepLink\(pendingProject\)/);
   assert.match(
@@ -106,6 +106,31 @@ test("a refresh retries the pending project link under the view's render guard",
     /await openProjectDeepLink\(pendingProject\);\s+if \(seq !== appState\.viewRenderSeq \|\| appState\.currentView !== "contexts"\) return;/,
     "the retry's await is seq-guarded like every other await in the function",
   );
+  const retryBlock = renderFn.match(/if \(pendingProject\) \{[^]*?\n {2}\}/)?.[0] ?? "";
+  assert.doesNotMatch(
+    retryBlock,
+    /if \(!pendingProject\) return/,
+    "a retry that resolves must fall through to the resource load and the redraw, not return",
+  );
+  assert.match(retryBlock, /syncUrlFromState\(\)/, "a resolved retry canonicalises the URL");
+  const tail = renderFn.slice(renderFn.indexOf("if (pendingProject)"));
+  assert.match(tail, /loadScopeResources\(contextsState\.selected\)/);
+  assert.match(tail, /loadAmbientPolicy\(contextsState\.selected, drawContexts\)/);
+  assert.match(tail, /loadContextModel\(contextsState\.selected, drawContexts\)/);
+  assert.match(tail, /drawContexts\(\);\n\}/, "the pass ends in a redraw");
+});
+
+test("a stale deep-link resolution cannot resurrect a pending link after the view moved on", () => {
+  const open = source.match(/export async function openProjectDeepLink\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(open, /const generation = pendingProjectGeneration;/);
+  assert.match(open, /if \(generation !== pendingProjectGeneration\) return;/);
+  const clear = source.match(/export function clearPendingProjectLink\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(clear, /pendingProjectGeneration\+\+/);
+});
+
+test("the pending notice never pre-empts the loading state", () => {
+  const grid = source.match(/function gridTpl\(\)[^]*?\n\}/)?.[0] ?? "";
+  assert.match(grid, /pendingProject && !contextsLoading \? pendingProjectNotice\(pendingProject\) : ""/);
 });
 
 test("a pending project link addresses the URL positively and cannot leak to another view", () => {
