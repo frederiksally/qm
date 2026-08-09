@@ -111,7 +111,6 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
   const multiHarness = new Set(options.map((o) => o.harnessId)).size > 1;
   const selected = selectedValue(config);
   const stalePin = selected !== INHERIT && !options.some((o) => o.value === selected);
-  const isSlack = scopeId.startsWith("channel:");
   return html`
     <section class="context-panel context-model" aria-labelledby="context-model-title">
       <div class="context-panel-heading">
@@ -146,7 +145,6 @@ export function contextModelSection(scopeId: string): TemplateResult | typeof no
             ? "Following the org default — it changes when the org's does."
             : "Pinned for this project. Anyone in a chat can still pick a different model for that conversation."
         }
-        ${isSlack ? " The channel description in Slack names this model." : ""}
       </p>
       ${
         contextModelState.notice

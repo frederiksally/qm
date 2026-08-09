@@ -1,6 +1,5 @@
-import { errMessage } from "../util/errors.ts";
 import { sleep } from "./util.ts";
-import { isExternallyShared, isMpim, type ChannelMeta } from "./identity.ts";
+import { isExternallyShared, type ChannelMeta } from "./identity.ts";
 
 export interface SlackReplyArgs {
   channel: string;
@@ -56,18 +55,10 @@ export function slackReplyArgs(
   };
 }
 
-export function scopeSurfaceUrl(webUiPublicUrl: string | undefined, scopeId: string): string | undefined {
-  const base = (webUiPublicUrl ?? "").trim().replace(/\/+$/, "");
-  if (!base || !scopeId) return undefined;
-  const personal = /^personal:([^@]+)@/.exec(scopeId);
-  if (personal?.[1] && /^[a-z0-9._-]+$/i.test(personal[1])) return `${base}/projects/${personal[1].toLowerCase()}`;
-  const shared = /^(channel|group):(.+)$/.exec(scopeId);
-  if (shared?.[1] && shared[2]) return `${base}/projects/${shared[1]}/${encodeURIComponent(shared[2])}`;
-  return `${base}/contexts?scope=${encodeURIComponent(scopeId)}`;
-}
-
 export function channelSurfaceUrl(webUiPublicUrl: string | undefined, channelId: string): string | undefined {
-  return scopeSurfaceUrl(webUiPublicUrl, `channel:${channelId}`);
+  const base = (webUiPublicUrl ?? "").trim().replace(/\/+$/, "");
+  if (!base || !channelId) return undefined;
+  return `${base}/projects/channel/${encodeURIComponent(channelId)}`;
 }
 
 export function channelWelcomeMessage(surfaceUrl: string | undefined): string {
@@ -77,91 +68,11 @@ export function channelWelcomeMessage(surfaceUrl: string | undefined): string {
   return `Hi! I'm the agent for this channel. Everyone here can see and manage what I'm doing — scheduled jobs, skills, files, and apps — on this channel's shared page: ${surfaceUrl}`;
 }
 
-export function surfaceHeaderText(
-  facts: { agentLabel?: string; modelName?: string },
-  projectUrl: string | undefined,
-): string | undefined {
-  const agent = (facts.agentLabel ?? "").trim();
-  const model = (facts.modelName ?? "").trim();
-  const url = (projectUrl ?? "").trim();
-  const modelText = model ? `${agent ? `${agent} is using` : "Using"} ${model} here.` : "";
-  const link = url ? `<${url}|More settings>` : "";
-  return [modelText, link].filter(Boolean).join(" ") || undefined;
-}
-
-function unwrapSlackLinks(text: string): string {
-  return text.replace(/<([^<>|]+)(?:\|[^<>]*)?>/g, "$1");
-}
-
-export function headerUpdate(
-  existing: { value?: string; creator?: string } | undefined,
-  botUserId: string,
-  desired: string,
-): "set" | "skip" {
-  const value = (existing?.value ?? "").trim();
-  if (unwrapSlackLinks(value) === unwrapSlackLinks(desired)) return "skip";
-  if (!value) return "set";
-  return existing?.creator === botUserId ? "set" : "skip";
-}
-
-const SURFACE_HEADER_MAX_TRACKED = 1000;
-
-export interface SurfaceHeaderClient {
-  conversations: {
-    info: (args: { channel: string }) => Promise<{ channel?: ChannelMeta }>;
-    setTopic: (args: { channel: string; topic: string }) => Promise<unknown>;
-    setPurpose: (args: { channel: string; purpose: string }) => Promise<unknown>;
-  };
-}
-
-export function createSurfaceHeaderEnsurer(opts: {
-  headerFacts(scope: string): Promise<{ agentLabel?: string; modelName: string }>;
-  webUiPublicUrl: string | undefined;
-  ids: { botUserId: string };
-  maxTracked?: number;
-}): (client: SurfaceHeaderClient, channel: string, scopeId: string, kind: "dm" | "channel") => void {
-  const maxTracked = opts.maxTracked ?? SURFACE_HEADER_MAX_TRACKED;
-  const settled = new Map<string, string>();
-  const inFlight = new Set<string>();
-  const requeued = new Set<string>();
-  return function ensure(client, channel, scopeId, kind) {
-    if (inFlight.has(channel)) {
-      requeued.add(channel);
-      return;
-    }
-    inFlight.add(channel);
-    void (async () => {
-      try {
-        const desired = surfaceHeaderText(
-          await opts.headerFacts(scopeId),
-          scopeSurfaceUrl(opts.webUiPublicUrl, scopeId),
-        );
-        if (!desired || settled.get(channel) === desired) return;
-        const info = (await client.conversations.info({ channel })).channel;
-        if (kind === "channel" && (isExternallyShared(info) || isMpim(info))) return;
-        const existing = kind === "dm" ? info?.topic : info?.purpose;
-        if (headerUpdate(existing, opts.ids.botUserId, desired) === "set") {
-          if (kind === "dm") await client.conversations.setTopic({ channel, topic: desired });
-          else await client.conversations.setPurpose({ channel, purpose: desired });
-        }
-        settled.set(channel, desired);
-        capMap(settled, maxTracked);
-      } catch (err) {
-        console.error("[slack] surface header ensure failed:", errMessage(err));
-      } finally {
-        inFlight.delete(channel);
-        if (requeued.delete(channel)) ensure(client, channel, scopeId, kind);
-      }
-    })();
-  };
-}
-
 export async function onBotJoinedChannel(opts: {
   client: {
     chat: { postMessage: (args: SlackReplyArgs) => Promise<unknown> };
     conversations: {
       info: (args: { channel: string }) => Promise<{ channel?: ChannelMeta }>;
-      setPurpose: (args: { channel: string; purpose: string }) => Promise<unknown>;
     };
   };
   channel: string | undefined;
@@ -169,24 +80,22 @@ export async function onBotJoinedChannel(opts: {
   botUserId: string;
   webUiPublicUrl: string | undefined;
   syncDirectory: () => Promise<void>;
-  ensureHeader?: (channel: string) => void;
 }): Promise<void> {
-  const { client, channel, joinerUserId, botUserId, webUiPublicUrl, syncDirectory, ensureHeader } = opts;
+  const { client, channel, joinerUserId, botUserId, webUiPublicUrl, syncDirectory } = opts;
   if (!channel || !joinerUserId || joinerUserId !== botUserId) return;
   const surfaceUrl = channelSurfaceUrl(webUiPublicUrl, channel);
+  try {
+    await syncDirectory();
+  } catch {
+    void 0;
+  }
   try {
     const info = (await client.conversations.info({ channel })).channel;
     if (!isExternallyShared(info)) {
       await client.chat.postMessage(
         slackReplyArgs(channel, channelWelcomeMessage(surfaceUrl), undefined, { unfurlLinks: false }),
       );
-      ensureHeader?.(channel);
     }
-  } catch {
-    void 0;
-  }
-  try {
-    await syncDirectory();
   } catch {
     void 0;
   }

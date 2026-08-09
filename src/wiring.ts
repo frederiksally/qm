@@ -1189,7 +1189,6 @@ export function buildApp(
   const slackCore = createSlackCoreClient({
     app,
     config: configStore,
-    runtimeFallback: fallback,
     blobTransfer,
     deliveries,
     metrics,
@@ -1200,7 +1199,6 @@ export function buildApp(
     ackPicks: ackEmojiPicks,
     feedback,
     ackModelId: () => auxiliaryModelForProvider("anthropic"),
-    ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     ...(harness.models.pickAckEmoji ? { pickAckEmoji: (t, c) => harness.models.pickAckEmoji!(t, c) } : {}),
   });
   runs.onTerminal((run) => {

@@ -75,3 +75,33 @@ test("every project member can invite while only the owner can remove people", (
   assert.doesNotMatch(detail, /c\.project && isProjectOwner\(c\)/);
   assert.match(members, /isProjectOwner\(context\) && principalId !== project\.ownerId/);
 });
+
+test("a project deep link that cannot be resolved says so instead of silently listing projects", () => {
+  const open = source.match(/export async function openProjectDeepLink\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(open, /resolveProjectScope\(await ensureContexts\(\), slug\)/);
+  assert.match(open, /unresolvedProject = slug/, "an unresolved link is remembered, not dropped");
+  assert.match(open, /unresolvedProject = null/, "resolving clears the pending link");
+
+  const grid = source.match(/function gridTpl\(\)[^]*?\n\}/)?.[0] ?? "";
+  assert.match(grid, /unresolvedProject \? unresolvedProjectNotice\(unresolvedProject\) : ""/);
+  assert.match(source, /isn't available to you yet/);
+});
+
+test("a refresh retries the pending project link, and opening a project clears it", () => {
+  const renderFn = source.match(/export async function renderContexts\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(renderFn, /if \(unresolvedProject\) await openProjectDeepLink\(unresolvedProject\)/);
+  const select = source.match(/function selectContext\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(select, /unresolvedProject = null/);
+  const reset = source.match(/export function resetContextsState\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(reset, /unresolvedProject = null/);
+});
+
+test("the address bar keeps an unresolved project link so a reload can retry it", () => {
+  const shell = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
+  const sync = shell.match(/export function syncUrlFromState\(\)[^]*?\n\}/)?.[0] ?? "";
+  assert.match(
+    sync,
+    /if \(unresolvedProjectLink\(\) && !contextsState\.selected && PROJECT_SCOPED_VIEWS\.has\(appState\.currentView\)\) return;/,
+  );
+  assert.match(shell, /const PROJECT_SCOPED_VIEWS = new Set<View>\(\["contexts", "files", "deploys"\]\)/);
+});

@@ -115,6 +115,26 @@ let contextsResetSeq = 0;
 let contextsFetchSeq = 0;
 let contextsQuery = "";
 let contextsWorkspaceFilter: "active" | "all" = "active";
+let unresolvedProject: string | null = null;
+
+export function unresolvedProjectLink(): string | null {
+  return unresolvedProject;
+}
+
+function unresolvedProjectNotice(slug: string): string {
+  const kind = slug.startsWith("group:") ? "group conversation" : "channel";
+  return `That ${kind}'s project page isn't available to you yet. If the agent just joined, its ${kind}s are still syncing — refresh to try again. Otherwise you may not be a member of it.`;
+}
+
+export async function openProjectDeepLink(slug: string): Promise<void> {
+  const scope = resolveProjectScope(await ensureContexts(), slug);
+  if (scope) {
+    contextsState.selected = scope;
+    unresolvedProject = null;
+    return;
+  }
+  unresolvedProject = slug;
+}
 
 async function fetchContexts(): Promise<CoreContext[]> {
   const fetchSeq = ++contextsFetchSeq;
@@ -158,6 +178,7 @@ export function resetContextsState(): void {
   createProjectOpener = null;
   contextsQuery = "";
   contextsWorkspaceFilter = "active";
+  unresolvedProject = null;
 }
 
 export async function renderContexts(): Promise<void> {
@@ -173,6 +194,7 @@ export async function renderContexts(): Promise<void> {
     if (seq !== appState.viewRenderSeq || appState.currentView !== "contexts") return;
     contextsNotice = errMessage(e, "Failed to load contexts.");
   }
+  if (unresolvedProject) await openProjectDeepLink(unresolvedProject);
   contextsLoading = false;
   if (
     contextsState.selected &&
@@ -226,7 +248,7 @@ export function personalScopeId(): string | null {
   return contextsState.list.find((c) => c.kind === "personal")?.scopeId ?? null;
 }
 
-export function resolveProjectScope(contexts: readonly CoreContext[], slug: string): string | null {
+function resolveProjectScope(contexts: readonly CoreContext[], slug: string): string | null {
   if (slug.startsWith("channel:") || slug.startsWith("group:")) {
     return contexts.some((context) => context.scopeId === slug) ? slug : null;
   }
@@ -317,7 +339,10 @@ function drawContexts(): void {
 }
 
 function gridTpl(): TemplateResult {
-  const status = contextsNotice || (contextsLoading && contextsState.list.length === 0 ? "Loading projects…" : "");
+  const status =
+    contextsNotice ||
+    (unresolvedProject ? unresolvedProjectNotice(unresolvedProject) : "") ||
+    (contextsLoading && contextsState.list.length === 0 ? "Loading projects…" : "");
   const q = contextsQuery.trim().toLowerCase();
   const matches = (context: CoreContext) => {
     const meta = contextMeta(context);
@@ -1201,6 +1226,7 @@ function selectContext(scopeId: string | null): void {
   contextsState.memberError = "";
   contextsState.memberSearchedQuery = "";
   contextsState.selected = scopeId;
+  unresolvedProject = null;
   contextsState.resources = null;
   contextsState.resourcesScope = null;
   contextsState.resourcesNotice = "";

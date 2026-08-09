@@ -234,16 +234,9 @@ class FakeCore implements SlackCoreClient {
   private runGate: Promise<void> | undefined;
   private releaseRun: (() => void) | undefined;
   steeredDelayMs = 0;
-  readonly modelChangeListeners: Array<(scope: any) => void> = [];
 
   async externalSlackParticipants(): Promise<boolean> {
     return this.externalParticipants;
-  }
-  async surfaceHeaderFacts(): Promise<{ agentLabel?: string; modelName: string }> {
-    return { agentLabel: "Quartermaster", modelName: "Claude Opus 4.8" };
-  }
-  onScopeModelChanged(listener: (scope: any) => void): void {
-    this.modelChangeListeners.push(listener);
   }
   async stageBlob(bytes: Uint8Array): Promise<{ blobId: string; sizeBytes: number }> {
     return { blobId: "blob-1", sizeBytes: bytes.byteLength };
@@ -614,7 +607,10 @@ test("Agent View DM activity and final text share one native stream", async () =
     assert.equal(f.client.posts.length, 0);
     assert.equal(f.client.streamStops[0]?.body.markdown_text, "\n\nHere is the result.");
     assert.equal(
-      f.client.streamAppends.filter((append) => append.body.markdown_text).map((append) => append.body.markdown_text).join(""),
+      f.client.streamAppends
+        .filter((append) => append.body.markdown_text)
+        .map((append) => append.body.markdown_text)
+        .join(""),
       "I’ll check the company context.",
     );
     assert.equal(f.client.deletes.length, 0);
@@ -674,73 +670,17 @@ test("a late DM thread approval reconciles its opened stream with buttons and no
   }
 });
 
-test("a human's DM sets the conversation header to the serving model + web surface", async () => {
+test("the agent never rewrites a conversation's description or topic", async () => {
   const f = await fixture({ webUiPublicUrl: "https://claw.example.dev" });
   try {
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello", ts: "100.1" });
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(f.client.topics, [
-      {
-        channel: "D1",
-        topic:
-          "Quartermaster is using Claude Opus 4.8 here. <https://claw.example.dev/contexts?scope=personal%3AU1|More settings>",
-      },
-    ]);
-    await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "again", ts: "100.2" });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(f.client.topics.length, 1);
-  } finally {
-    await f.stop();
-  }
-});
-
-test("a channel's description names the channel's own default model and project page", async () => {
-  const f = await fixture({ webUiPublicUrl: "https://claw.example.dev" });
-  try {
-    const mention = { channel: "C1", channel_type: "channel", user: "U1", text: "<@UBOT> hi", ts: "100.1" };
+    const mention = { channel: "C1", channel_type: "channel", user: "U1", text: "<@UBOT> hi", ts: "100.2" };
     f.client.messagesByChannel.set("C1", [mention]);
     await f.app.emitEvent("app_mention", mention, "Ev-channel-header");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(f.client.purposes, [
-      {
-        channel: "C1",
-        purpose:
-          "Quartermaster is using Claude Opus 4.8 here. <https://claw.example.dev/projects/channel/C1|More settings>",
-      },
-    ]);
-    assert.deepEqual(f.client.topics, [], "a channel's topic stays the members' own scratch space");
-  } finally {
-    await f.stop();
-  }
-});
-
-test("a scope's model change rewrites its channel description without waiting for a message", async () => {
-  const f = await fixture({ webUiPublicUrl: "https://claw.example.dev" });
-  try {
-    assert.equal(f.core.modelChangeListeners.length, 1, "the plugin subscribes to core's model changes");
-    for (const listener of f.core.modelChangeListeners) listener("channel:C1");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(f.client.purposes, [
-      {
-        channel: "C1",
-        purpose:
-          "Quartermaster is using Claude Opus 4.8 here. <https://claw.example.dev/projects/channel/C1|More settings>",
-      },
-    ]);
-    for (const listener of f.core.modelChangeListeners) listener("personal:alice@example.com");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(f.client.topics, [], "a DM's topic settles on the person's next message, not on a push");
-  } finally {
-    await f.stop();
-  }
-});
-
-test("an external guest's DM never reveals the model or the web surface", async () => {
-  const f = await fixture({ externalParticipants: true, webUiPublicUrl: "https://claw.example.dev" });
-  try {
-    await f.app.emitMessage({ channel: "DX", channel_type: "im", user: "UX", text: "hello", ts: "100.1" });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(f.client.topics, []);
+    assert.deepEqual(f.client.topics, [], "a DM's topic stays the members' own");
+    assert.deepEqual(f.client.purposes, [], "a channel's description stays the members' own");
   } finally {
     await f.stop();
   }

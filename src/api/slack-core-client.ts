@@ -28,8 +28,6 @@ import { projectActivitySteps, type SlackActivityStep } from "../slack/activity-
 import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import { swallowAs } from "../util/errors.ts";
 import { runtimeInstanceId } from "../config.ts";
-import { resolveRuntimeChoiceDurable, type RuntimeChoice } from "../harness/harness-router.ts";
-import { modelDisplayName } from "../model/pi-models.ts";
 
 interface SlackRunHooks {
   onDelta?(delta: string): void;
@@ -62,8 +60,6 @@ interface DirectoryPush {
 
 export interface SlackCoreClient {
   externalSlackParticipants(): Promise<boolean>;
-  surfaceHeaderFacts(scope: ScopeId): Promise<{ agentLabel?: string; modelName: string }>;
-  onScopeModelChanged(listener: (scope: ScopeId) => void): void;
   stageBlob(bytes: Uint8Array): Promise<{ blobId: string; sizeBytes: number }>;
   readBlob(blobId: string): Promise<Buffer>;
   readFileArtifact(artifactId: string, viewerId: string): Promise<Buffer>;
@@ -120,7 +116,6 @@ export type { SurfaceContextRequest };
 export interface SlackCoreClientDeps {
   app: App;
   config: ScopedConfigStore;
-  runtimeFallback: RuntimeChoice;
   blobTransfer: BlobTransferStore;
   deliveries: DeliveryStore;
   metrics: MetricsSink;
@@ -132,11 +127,6 @@ export interface SlackCoreClientDeps {
   ackPicks?: AckEmojiPickStore;
   feedback?: FeedbackStore;
   ackModelId?: () => string | undefined;
-  brandingDefault?: { selfLabel?: string };
-}
-
-function agentLabelFrom(raw: string | undefined): string | undefined {
-  return raw?.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, "").slice(0, 40) || undefined;
 }
 
 const RUN_FALLBACK_POLL_MS = 1_000;
@@ -152,19 +142,6 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
   return {
     async externalSlackParticipants() {
       return (await deps.config.getExternalSlackParticipantsDurable(orgScope)) === true;
-    },
-
-    async surfaceHeaderFacts(scope) {
-      const [choice, branding] = await Promise.all([
-        resolveRuntimeChoiceDurable(deps.config, orgScope, scope, deps.runtimeFallback),
-        deps.config.getBrandingDurable(orgScope),
-      ]);
-      const agentLabel = agentLabelFrom(branding?.selfLabel ?? deps.brandingDefault?.selfLabel);
-      return { ...(agentLabel ? { agentLabel } : {}), modelName: modelDisplayName(choice.modelId) };
-    },
-
-    onScopeModelChanged(listener) {
-      deps.config.onRuntimeSelectionChanged((scope) => listener(scope));
     },
 
     async stageBlob(bytes) {
