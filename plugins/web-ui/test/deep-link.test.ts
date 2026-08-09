@@ -20,6 +20,27 @@ test("the contexts view carries its open scope", () => {
   assert.equal(deepLinkPath("", "contexts", null, "channel:C1"), "/contexts?scope=channel%3AC1");
 });
 
+test("a project link the viewer cannot open yet stays addressable, so a reload retries it", () => {
+  assert.equal(deepLinkPath("", "contexts", null, null, null, "channel:C1"), "/projects/channel/C1");
+  assert.equal(deepLinkPath("/web-ui/", "contexts", null, null, null, "group:G9"), "/web-ui/projects/group/G9");
+  assert.equal(deepLinkPath("", "contexts", null, null, null, "atlas"), "/projects/atlas");
+  assert.equal(deepLinkPath("", "contexts", null, null, null, "channel:C 1"), "/projects/channel/C%201");
+});
+
+test("a resolved scope wins over a pending project link", () => {
+  assert.equal(deepLinkPath("", "contexts", null, "channel:C1", null, "channel:CDEAD"), "/contexts?scope=channel%3AC1");
+});
+
+test("a pending project link never addresses a view other than contexts", () => {
+  assert.equal(deepLinkPath("", "files", null, null, null, "channel:C1"), "/files");
+  assert.equal(deepLinkPath("", "crons", null, null, null, "channel:C1"), "/crons");
+});
+
+test("a project path round-trips through the pending-link form", () => {
+  const path = deepLinkPath("", "contexts", null, null, null, "channel:C0123");
+  assert.deepEqual(parseDeepLink("", path, ""), { view: "contexts", session: null, item: "channel:C0123" });
+});
+
 test("a non-root base is prefixed, with or without its trailing slash", () => {
   assert.equal(deepLinkPath("/web-ui/", "crons", null), "/web-ui/crons");
   assert.equal(deepLinkPath("/web-ui", "chats", "s1"), "/web-ui/?session=s1");

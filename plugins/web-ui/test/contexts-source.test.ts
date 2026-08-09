@@ -79,29 +79,47 @@ test("every project member can invite while only the owner can remove people", (
 test("a project deep link that cannot be resolved says so instead of silently listing projects", () => {
   const open = source.match(/export async function openProjectDeepLink\([^]*?\n\}/)?.[0] ?? "";
   assert.match(open, /resolveProjectScope\(await ensureContexts\(\), slug\)/);
-  assert.match(open, /unresolvedProject = slug/, "an unresolved link is remembered, not dropped");
-  assert.match(open, /unresolvedProject = null/, "resolving clears the pending link");
+  assert.match(open, /pendingProject = slug/, "an unresolved link is remembered, not dropped");
+  assert.match(open, /selectScope\(scope\)/, "a resolved link goes through the shared scope selection");
 
   const grid = source.match(/function gridTpl\(\)[^]*?\n\}/)?.[0] ?? "";
-  assert.match(grid, /unresolvedProject \? unresolvedProjectNotice\(unresolvedProject\) : ""/);
-  assert.match(source, /isn't available to you yet/);
+  assert.match(grid, /pendingProject \? pendingProjectNotice\(pendingProject\) : ""/);
+  assert.match(source, /isn't open to you/);
 });
 
-test("a refresh retries the pending project link, and opening a project clears it", () => {
-  const renderFn = source.match(/export async function renderContexts\([^]*?\n\}/)?.[0] ?? "";
-  assert.match(renderFn, /if \(unresolvedProject\) await openProjectDeepLink\(unresolvedProject\)/);
+test("selecting a scope by link or by click clears the pending link through one helper", () => {
+  const scope = source.match(/function selectScope\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(scope, /pendingProject = null/);
+  assert.match(scope, /resetAmbientPolicy\(\)/);
+  assert.match(scope, /resetContextModel\(\)/);
   const select = source.match(/function selectContext\([^]*?\n\}/)?.[0] ?? "";
-  assert.match(select, /unresolvedProject = null/);
+  assert.match(select, /selectScope\(scopeId\)/, "click selection reuses the same helper");
   const reset = source.match(/export function resetContextsState\([^]*?\n\}/)?.[0] ?? "";
-  assert.match(reset, /unresolvedProject = null/);
+  assert.match(reset, /pendingProject = null/);
 });
 
-test("the address bar keeps an unresolved project link so a reload can retry it", () => {
+test("a refresh retries the pending project link under the view's render guard", () => {
+  const renderFn = source.match(/export async function renderContexts\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(renderFn, /if \(pendingProject\) \{[^]*?await openProjectDeepLink\(pendingProject\)/);
+  assert.match(
+    renderFn,
+    /await openProjectDeepLink\(pendingProject\);\s+if \(seq !== appState\.viewRenderSeq \|\| appState\.currentView !== "contexts"\) return;/,
+    "the retry's await is seq-guarded like every other await in the function",
+  );
+});
+
+test("a pending project link addresses the URL positively and cannot leak to another view", () => {
   const shell = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
   const sync = shell.match(/export function syncUrlFromState\(\)[^]*?\n\}/)?.[0] ?? "";
   assert.match(
     sync,
-    /if \(unresolvedProjectLink\(\) && !contextsState\.selected && PROJECT_SCOPED_VIEWS\.has\(appState\.currentView\)\) return;/,
+    /appState\.currentView === "contexts" \? pendingProjectLink\(\) : null/,
+    "the pending link only ever addresses the contexts view",
   );
-  assert.match(shell, /const PROJECT_SCOPED_VIEWS = new Set<View>\(\["contexts", "files", "deploys"\]\)/);
+  assert.doesNotMatch(sync, /return;/, "the URL is produced, never suppressed");
+  const switchFn = shell.match(/export function switchView\([^]*?\n\}/)?.[0] ?? "";
+  assert.match(switchFn, /if \(v !== "contexts"\) clearPendingProjectLink\(\)/);
+
+  const deepLink = readFileSync(new URL("../src/deep-link.ts", import.meta.url), "utf8");
+  assert.match(deepLink, /view === "contexts" && pendingProject/);
 });

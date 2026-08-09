@@ -115,25 +115,28 @@ let contextsResetSeq = 0;
 let contextsFetchSeq = 0;
 let contextsQuery = "";
 let contextsWorkspaceFilter: "active" | "all" = "active";
-let unresolvedProject: string | null = null;
+let pendingProject: string | null = null;
 
-export function unresolvedProjectLink(): string | null {
-  return unresolvedProject;
+export function pendingProjectLink(): string | null {
+  return pendingProject;
 }
 
-function unresolvedProjectNotice(slug: string): string {
+export function clearPendingProjectLink(): void {
+  pendingProject = null;
+}
+
+function pendingProjectNotice(slug: string): string {
   const kind = slug.startsWith("group:") ? "group conversation" : "channel";
-  return `That ${kind}'s project page isn't available to you yet. If the agent just joined, its ${kind}s are still syncing — refresh to try again. Otherwise you may not be a member of it.`;
+  return `That ${kind}'s project page isn't open to you. If the agent only just joined, it may still be syncing — refresh to try again. Otherwise you're not a member of it, or it isn't one the agent can share.`;
 }
 
 export async function openProjectDeepLink(slug: string): Promise<void> {
   const scope = resolveProjectScope(await ensureContexts(), slug);
-  if (scope) {
-    contextsState.selected = scope;
-    unresolvedProject = null;
+  if (!scope) {
+    pendingProject = slug;
     return;
   }
-  unresolvedProject = slug;
+  selectScope(scope);
 }
 
 async function fetchContexts(): Promise<CoreContext[]> {
@@ -178,7 +181,7 @@ export function resetContextsState(): void {
   createProjectOpener = null;
   contextsQuery = "";
   contextsWorkspaceFilter = "active";
-  unresolvedProject = null;
+  pendingProject = null;
 }
 
 export async function renderContexts(): Promise<void> {
@@ -194,8 +197,12 @@ export async function renderContexts(): Promise<void> {
     if (seq !== appState.viewRenderSeq || appState.currentView !== "contexts") return;
     contextsNotice = errMessage(e, "Failed to load contexts.");
   }
-  if (unresolvedProject) await openProjectDeepLink(unresolvedProject);
   contextsLoading = false;
+  if (pendingProject) {
+    await openProjectDeepLink(pendingProject);
+    if (seq !== appState.viewRenderSeq || appState.currentView !== "contexts") return;
+    if (!pendingProject) return;
+  }
   if (
     contextsState.selected &&
     contextsState.list.some((c) => c.scopeId === contextsState.selected) &&
@@ -341,7 +348,7 @@ function drawContexts(): void {
 function gridTpl(): TemplateResult {
   const status =
     contextsNotice ||
-    (unresolvedProject ? unresolvedProjectNotice(unresolvedProject) : "") ||
+    (pendingProject ? pendingProjectNotice(pendingProject) : "") ||
     (contextsLoading && contextsState.list.length === 0 ? "Loading projects…" : "");
   const q = contextsQuery.trim().toLowerCase();
   const matches = (context: CoreContext) => {
@@ -1216,6 +1223,17 @@ function contextSessionRow(s: CoreSession): TemplateResult {
   `;
 }
 
+function selectScope(scopeId: string | null): void {
+  contextsState.selected = scopeId;
+  pendingProject = null;
+  contextsState.resources = null;
+  contextsState.resourcesScope = null;
+  contextsState.resourcesNotice = "";
+  contextsState.resourcesLoading = false;
+  resetAmbientPolicy();
+  resetContextModel();
+}
+
 function selectContext(scopeId: string | null): void {
   memberSearchSeq++;
   cancelMemberSearchTimer();
@@ -1225,14 +1243,7 @@ function selectContext(scopeId: string | null): void {
   contextsState.memberSearching = false;
   contextsState.memberError = "";
   contextsState.memberSearchedQuery = "";
-  contextsState.selected = scopeId;
-  unresolvedProject = null;
-  contextsState.resources = null;
-  contextsState.resourcesScope = null;
-  contextsState.resourcesNotice = "";
-  contextsState.resourcesLoading = false;
-  resetAmbientPolicy();
-  resetContextModel();
+  selectScope(scopeId);
   syncUrlFromState();
   drawContexts();
   if (scopeId) {

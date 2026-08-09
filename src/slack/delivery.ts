@@ -85,17 +85,17 @@ export async function onBotJoinedChannel(opts: {
   if (!channel || !joinerUserId || joinerUserId !== botUserId) return;
   const surfaceUrl = channelSurfaceUrl(webUiPublicUrl, channel);
   try {
-    await syncDirectory();
-  } catch {
-    void 0;
-  }
-  try {
     const info = (await client.conversations.info({ channel })).channel;
     if (!isExternallyShared(info)) {
       await client.chat.postMessage(
         slackReplyArgs(channel, channelWelcomeMessage(surfaceUrl), undefined, { unfurlLinks: false }),
       );
     }
+  } catch {
+    void 0;
+  }
+  try {
+    await syncDirectory();
   } catch {
     void 0;
   }

@@ -245,7 +245,7 @@ test("channelWelcomeMessage includes the link when present, omits it cleanly whe
   assert.ok(linkless.length > 0);
 });
 
-test("onBotJoinedChannel: syncs the directory before posting, so the link it advertises already resolves", async () => {
+test("onBotJoinedChannel: posts the welcome before the directory sync, so a slow sync cannot delay or lose it", async () => {
   const { client, calls } = fakeJoinClient();
   let synced = 0;
   await onBotJoinedChannel({
@@ -264,10 +264,14 @@ test("onBotJoinedChannel: syncs the directory before posting, so the link it adv
   assert.equal(calls.posted[0]!.channel, "C123");
   assert.ok(calls.posted[0]!.text.includes(expectedUrl), "welcome message must contain the channel surface deep link");
   assert.equal(synced, 1, "directory sync must run on bot join");
-  assert.deepEqual(calls.order, ["sync", "post"], "the channel must be in the directory before its link is advertised");
+  assert.deepEqual(
+    calls.order,
+    ["post", "sync"],
+    "the welcome must not wait on the directory sync, which is coalesced and unbounded",
+  );
 });
 
-test("onBotJoinedChannel: a sync failure still posts the welcome", async () => {
+test("onBotJoinedChannel: a sync failure still leaves the welcome posted", async () => {
   const { client, calls } = fakeJoinClient();
   await assert.doesNotReject(
     onBotJoinedChannel({

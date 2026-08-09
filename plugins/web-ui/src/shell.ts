@@ -63,11 +63,12 @@ import { renderDeploys } from "./deploys";
 import { renderMemory, resetMemoryState } from "./memory";
 import { renderSkills } from "./skills";
 import {
+  clearPendingProjectLink,
   contextsState,
   openProjectDeepLink,
+  pendingProjectLink,
   renderContexts,
   resetContextsState,
-  unresolvedProjectLink,
 } from "./contexts";
 import { appState, isView, type AuthMode, type Me, type View } from "./shell-state";
 import { trapDialogFocus } from "./dialog-focus";
@@ -94,13 +95,17 @@ export function adminSessionLogUrl(sessionId: string, scopeId: string): string {
   return `${ADMIN_BASE}/?${q.toString()}`;
 }
 
-const PROJECT_SCOPED_VIEWS = new Set<View>(["contexts", "files", "deploys"]);
-
 export function syncUrlFromState(): void {
-  if (unresolvedProjectLink() && !contextsState.selected && PROJECT_SCOPED_VIEWS.has(appState.currentView)) return;
   const chatState = mainConversation().state;
   const sessionId = splitState.active ? null : (chatState.sessionId ?? chatState.rememberedSessionId);
-  const next = deepLinkPath(UI_BASE, appState.currentView, sessionId, contextsState.selected);
+  const next = deepLinkPath(
+    UI_BASE,
+    appState.currentView,
+    sessionId,
+    contextsState.selected,
+    null,
+    appState.currentView === "contexts" ? pendingProjectLink() : null,
+  );
   if (`${location.pathname}${location.search}` !== next) history.replaceState(null, "", next);
 }
 
@@ -585,6 +590,7 @@ export function switchView(v: View): void {
   }
   appState.currentView = v;
   appState.viewRenderSeq++;
+  if (v !== "contexts") clearPendingProjectLink();
   sessionsState.openMenuId = null;
   sessionsState.renamingId = null;
   if (v !== "chats") {
