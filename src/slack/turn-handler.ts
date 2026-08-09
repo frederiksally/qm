@@ -27,9 +27,7 @@ import {
   encodeDeliveryTarget,
   groupDmDisplayName,
   hasContent,
-  isExternallyShared,
   isMpim,
-  type SurfaceHeaderClient,
   maybeInterceptStop,
   postThenAckRunDelivery,
   postWithVerify,
@@ -137,7 +135,6 @@ export function createTurnHandler(deps: {
   markEvent?: () => void;
   botToken: string;
   trustedFileHost?: string;
-  ensureHeader?: (client: SurfaceHeaderClient, channel: string, scopeId: string, kind: "dm" | "channel") => void;
 }): TurnHandler {
   const {
     bridge,
@@ -251,8 +248,6 @@ export function createTurnHandler(deps: {
       replyThreadTs = inc.threadTs ?? inc.ts;
       deliveryThreadTs = replyThreadTs;
       threadRef = dmThreadRef(inc.channel, replyThreadTs);
-      if (!actor.isBot && !actor.isExternalGuest)
-        deps.ensureHeader?.(client, inc.channel, `personal:${actor.externalId}`, "dm");
     } else {
       channelRef = inc.channel;
       const info = inc.prefetched ? inc.prefetched.info : await getChannelInfo(client, inc.channel);
@@ -261,8 +256,6 @@ export function createTurnHandler(deps: {
       isMpimChannel = isMpim(info);
       if (isMpimChannel) conversationKind = "group";
       channelName = info?.name;
-      if (!isMpimChannel && !isExternallyShared(info) && !actor.isBot && !actor.isExternalGuest)
-        deps.ensureHeader?.(client, inc.channel, `channel:${inc.channel}`, "channel");
       const root = inc.threadTs ?? inc.ts;
       threadRef = `${conversationKind === "group" ? "grp" : "ch"}:${inc.channel}:${root}`;
       replyThreadTs = root;

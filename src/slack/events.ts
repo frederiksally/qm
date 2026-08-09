@@ -7,7 +7,6 @@ import {
   isThreadReply,
   mentionsBot,
   onBotJoinedChannel,
-  type SurfaceHeaderClient,
   shouldProcessMessage,
 } from "./lib.ts";
 import type { AckGate } from "./deferred-ack.ts";
@@ -27,7 +26,6 @@ export function registerSlackEvents(
     ids: BotIdentity;
     deduper: ReturnType<typeof createDeduper>;
     webUiPublicUrl?: string;
-    ensureHeader?: (client: SurfaceHeaderClient, channel: string, scopeId: string, kind: "dm" | "channel") => void;
   },
 ): void {
   const { handler, mirror, directory, ids, deduper } = deps;
@@ -181,12 +179,6 @@ export function registerSlackEvents(
         botUserId: ids.botUserId,
         webUiPublicUrl: deps.webUiPublicUrl,
         syncDirectory: () => forceDirectorySync(client),
-        ...(deps.ensureHeader
-          ? {
-              ensureHeader: (channel: string) =>
-                deps.ensureHeader!(client as SurfaceHeaderClient, channel, `channel:${channel}`, "channel"),
-            }
-          : {}),
       });
     } else if (!e.channel || !knownPublicChannels.has(e.channel)) {
       await forceDirectorySync(client);

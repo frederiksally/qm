@@ -62,7 +62,14 @@ import { clearConnectorNotice, noteConnectorResult, renderConnectors, resetKeych
 import { renderDeploys } from "./deploys";
 import { renderMemory, resetMemoryState } from "./memory";
 import { renderSkills } from "./skills";
-import { contextsState, ensureContexts, renderContexts, resetContextsState, resolveProjectScope } from "./contexts";
+import {
+  clearPendingProjectLink,
+  contextsState,
+  openProjectDeepLink,
+  pendingProjectLink,
+  renderContexts,
+  resetContextsState,
+} from "./contexts";
 import { appState, isView, type AuthMode, type Me, type View } from "./shell-state";
 import { trapDialogFocus } from "./dialog-focus";
 export { appState, can, type Me, type View } from "./shell-state";
@@ -91,7 +98,14 @@ export function adminSessionLogUrl(sessionId: string, scopeId: string): string {
 export function syncUrlFromState(): void {
   const chatState = mainConversation().state;
   const sessionId = splitState.active ? null : (chatState.sessionId ?? chatState.rememberedSessionId);
-  const next = deepLinkPath(UI_BASE, appState.currentView, sessionId, contextsState.selected);
+  const next = deepLinkPath(
+    UI_BASE,
+    appState.currentView,
+    sessionId,
+    contextsState.selected,
+    null,
+    appState.currentView === "contexts" ? pendingProjectLink() : null,
+  );
   if (`${location.pathname}${location.search}` !== next) history.replaceState(null, "", next);
 }
 
@@ -576,6 +590,7 @@ export function switchView(v: View): void {
   }
   appState.currentView = v;
   appState.viewRenderSeq++;
+  if (v !== "contexts") clearPendingProjectLink();
   sessionsState.openMenuId = null;
   sessionsState.renamingId = null;
   if (v !== "chats") {
@@ -871,9 +886,9 @@ export async function boot(): Promise<void> {
     switchView("keychain");
   } else if (viewIntent) {
     if (wanted === "contexts" || wanted === "files" || wanted === "deploys") {
-      const scope =
-        params.get("scope") ?? (wantedItem ? resolveProjectScope(await ensureContexts(), wantedItem) : null);
+      const scope = params.get("scope");
       if (scope) contextsState.selected = scope;
+      else if (wantedItem) await openProjectDeepLink(wantedItem);
     }
     if (wanted === "crons" && wantedItem) openCronById(wantedItem);
     switchView(wanted as View);

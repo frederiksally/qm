@@ -12,10 +12,6 @@ import {
   postWithVerify,
   channelSurfaceUrl,
   channelWelcomeMessage,
-  surfaceHeaderText,
-  headerUpdate,
-  createSurfaceHeaderEnsurer,
-  scopeSurfaceUrl,
   onBotJoinedChannel,
 } from "../src/slack/lib.ts";
 
@@ -202,21 +198,20 @@ const BOT = "UBOT";
 
 function fakeJoinClient(
   opts: {
-    setPurposeFails?: boolean;
     postMessageFails?: boolean;
     extShared?: boolean;
-    existingPurpose?: string;
   } = {},
 ) {
   const calls = {
     posted: [] as Array<{ channel: string; text: string }>,
-    purposes: [] as Array<{ channel: string; purpose: string }>,
+    order: [] as string[],
   };
   return {
     calls,
     client: {
       chat: {
         postMessage: async (args: { channel: string; text: string }) => {
+          calls.order.push("post");
           if (opts.postMessageFails) {
             const err = new Error("ratelimited") as Error & { data?: unknown };
             err.data = { error: "ratelimited" };
@@ -228,20 +223,8 @@ function fakeJoinClient(
       },
       conversations: {
         info: async (_args: { channel: string }) => ({
-          channel: {
-            is_ext_shared: Boolean(opts.extShared),
-            ...(opts.existingPurpose !== undefined ? { purpose: { value: opts.existingPurpose } } : {}),
-          },
+          channel: { is_ext_shared: Boolean(opts.extShared) },
         }),
-        setPurpose: async (args: { channel: string; purpose: string }) => {
-          if (opts.setPurposeFails) {
-            const err = new Error("missing_scope") as Error & { data?: unknown };
-            err.data = { error: "missing_scope" };
-            throw err;
-          }
-          calls.purposes.push(args);
-          return {};
-        },
       },
     },
   };
@@ -262,7 +245,7 @@ test("channelWelcomeMessage includes the link when present, omits it cleanly whe
   assert.ok(linkless.length > 0);
 });
 
-test("onBotJoinedChannel: posts welcome with the deep link and sets the description when the bot joins", async () => {
+test("onBotJoinedChannel: posts the welcome before the directory sync, so a slow sync cannot delay or lose it", async () => {
   const { client, calls } = fakeJoinClient();
   let synced = 0;
   await onBotJoinedChannel({
@@ -273,14 +256,36 @@ test("onBotJoinedChannel: posts welcome with the deep link and sets the descript
     webUiPublicUrl: WEB_BASE,
     syncDirectory: async () => {
       synced++;
+      calls.order.push("sync");
     },
   });
   const expectedUrl = `${WEB_BASE}/projects/channel/C123`;
   assert.equal(calls.posted.length, 1);
   assert.equal(calls.posted[0]!.channel, "C123");
   assert.ok(calls.posted[0]!.text.includes(expectedUrl), "welcome message must contain the channel surface deep link");
-  assert.equal(calls.purposes.length, 0, "the description is the header ensurer's to write, not join's");
   assert.equal(synced, 1, "directory sync must run on bot join");
+  assert.deepEqual(
+    calls.order,
+    ["post", "sync"],
+    "the welcome must not wait on the directory sync, which is coalesced and unbounded",
+  );
+});
+
+test("onBotJoinedChannel: a sync failure still leaves the welcome posted", async () => {
+  const { client, calls } = fakeJoinClient();
+  await assert.doesNotReject(
+    onBotJoinedChannel({
+      client,
+      channel: "C123",
+      joinerUserId: BOT,
+      botUserId: BOT,
+      webUiPublicUrl: WEB_BASE,
+      syncDirectory: async () => {
+        throw new Error("core unreachable");
+      },
+    }),
+  );
+  assert.equal(calls.posted.length, 1, "a failed sync must not swallow the welcome");
 });
 
 test("onBotJoinedChannel: ignores a human joining (only the bot itself triggers it)", async () => {
@@ -297,31 +302,10 @@ test("onBotJoinedChannel: ignores a human joining (only the bot itself triggers 
     },
   });
   assert.equal(calls.posted.length, 0);
-  assert.equal(calls.purposes.length, 0);
   assert.equal(synced, 0);
 });
 
-test("onBotJoinedChannel: a setPurpose failure is swallowed and never blocks the welcome or sync", async () => {
-  const { client, calls } = fakeJoinClient({ setPurposeFails: true });
-  let synced = 0;
-  await assert.doesNotReject(
-    onBotJoinedChannel({
-      client,
-      channel: "C123",
-      joinerUserId: BOT,
-      botUserId: BOT,
-      webUiPublicUrl: WEB_BASE,
-      syncDirectory: async () => {
-        synced++;
-      },
-    }),
-  );
-  assert.equal(calls.posted.length, 1, "welcome still lands even when setPurpose throws");
-  assert.equal(calls.purposes.length, 0, "the failed setPurpose recorded nothing");
-  assert.equal(synced, 1, "directory sync still runs after a swallowed setPurpose error");
-});
-
-test("onBotJoinedChannel: a welcome-post failure still runs the directory sync", async () => {
+test("onBotJoinedChannel: a welcome-post failure still leaves the directory synced", async () => {
   const { client, calls } = fakeJoinClient({ postMessageFails: true });
   let synced = 0;
   await assert.doesNotReject(
@@ -337,28 +321,10 @@ test("onBotJoinedChannel: a welcome-post failure still runs the directory sync",
     }),
   );
   assert.equal(calls.posted.length, 0, "the welcome post threw");
-  assert.equal(synced, 1, "directory sync still runs so members can reach the surface even if the welcome failed");
+  assert.equal(synced, 1, "directory sync ran so members can reach the surface even if the welcome failed");
 });
 
-test("onBotJoinedChannel: preserves a human-written channel purpose instead of clobbering it", async () => {
-  const { client, calls } = fakeJoinClient({ existingPurpose: "Engineering on-call rotation" });
-  let synced = 0;
-  await onBotJoinedChannel({
-    client,
-    channel: "C123",
-    joinerUserId: BOT,
-    botUserId: BOT,
-    webUiPublicUrl: WEB_BASE,
-    syncDirectory: async () => {
-      synced++;
-    },
-  });
-  assert.equal(calls.posted.length, 1, "welcome still lands");
-  assert.equal(calls.purposes.length, 0, "an existing purpose is never overwritten");
-  assert.equal(synced, 1, "directory sync still runs");
-});
-
-test("onBotJoinedChannel: stays silent in an externally-shared (Slack Connect) channel — no welcome, no purpose", async () => {
+test("onBotJoinedChannel: stays silent in an externally-shared (Slack Connect) channel", async () => {
   const { client, calls } = fakeJoinClient({ extShared: true });
   let synced = 0;
   await onBotJoinedChannel({
@@ -372,31 +338,36 @@ test("onBotJoinedChannel: stays silent in an externally-shared (Slack Connect) c
     },
   });
   assert.equal(calls.posted.length, 0, "the bot never posts into a Connect channel (an external could see it)");
-  assert.equal(calls.purposes.length, 0, "the bot never writes a description in a Connect channel");
   assert.equal(synced, 1, "directory sync (which never emits into the channel) still runs");
 });
 
-test("onBotJoinedChannel: welcomes a normal internal channel and hands the description to the header ensurer", async () => {
-  const { client, calls } = fakeJoinClient({ existingPurpose: "" });
-  let synced = 0;
-  const ensured: string[] = [];
+test("onBotJoinedChannel: never writes the channel's description or topic", async () => {
+  const { client, calls } = fakeJoinClient();
+  const forbidden = { setPurpose: 0, setTopic: 0 };
+  const guarded = {
+    ...client,
+    conversations: {
+      ...client.conversations,
+      setPurpose: async () => {
+        forbidden.setPurpose++;
+        return {};
+      },
+      setTopic: async () => {
+        forbidden.setTopic++;
+        return {};
+      },
+    },
+  };
   await onBotJoinedChannel({
-    client,
+    client: guarded,
     channel: "C123",
     joinerUserId: BOT,
     botUserId: BOT,
     webUiPublicUrl: WEB_BASE,
-    syncDirectory: async () => {
-      synced++;
-    },
-    ensureHeader: (channel) => ensured.push(channel),
+    syncDirectory: async () => {},
   });
-  const expectedUrl = `${WEB_BASE}/projects/channel/C123`;
-  assert.equal(calls.posted.length, 1, "welcome lands on a normal internal channel");
-  assert.ok(calls.posted[0]!.text.includes(expectedUrl), "welcome message contains the project deep link");
-  assert.deepEqual(ensured, ["C123"], "join triggers exactly one header ensure");
-  assert.equal(calls.purposes.length, 0, "join no longer writes a second, competing description");
-  assert.equal(synced, 1, "directory sync runs");
+  assert.equal(calls.posted.length, 1, "the welcome is the only thing the join writes");
+  assert.deepEqual(forbidden, { setPurpose: 0, setTopic: 0 }, "a joined channel keeps whatever description it had");
 });
 
 function verifyHarness(
@@ -567,263 +538,4 @@ test("postWithVerify: threaded post verifies via conversations.replies", async (
   await postWithVerify(h.client, { channel: "C1", text: "hi", thread_ts: "5.5" } as any, KEY);
   assert.equal(h.repliesCalled, true);
   assert.equal(h.historyCalled, false, "threaded verify reads replies, not history");
-});
-
-test("surfaceHeaderText names the agent, its model, and the project link — degrading gracefully", () => {
-  assert.equal(
-    surfaceHeaderText(
-      { agentLabel: "Quartermaster", modelName: "Claude Opus 4.8" },
-      "https://claw.acme.dev/projects/channel/C1",
-    ),
-    "Quartermaster is using Claude Opus 4.8 here. <https://claw.acme.dev/projects/channel/C1|More settings>",
-  );
-  assert.equal(
-    surfaceHeaderText({ agentLabel: "QM", modelName: "Claude Opus 4.8" }, undefined),
-    "QM is using Claude Opus 4.8 here.",
-  );
-  assert.equal(
-    surfaceHeaderText({ modelName: "Claude Opus 4.8" }, undefined),
-    "Using Claude Opus 4.8 here.",
-    "an unbranded deployment keeps the bare model line",
-  );
-  assert.equal(surfaceHeaderText({}, "https://claw.acme.dev"), "<https://claw.acme.dev|More settings>");
-  assert.equal(surfaceHeaderText({ agentLabel: "QM", modelName: "  " }, "  "), undefined);
-});
-
-test("headerUpdate rewrites only an empty or self-authored header", () => {
-  const BOT = "U0BOT";
-  const desired = "Using Claude Opus 4.8 here. <https://claw.acme.dev|More settings>";
-  assert.equal(headerUpdate(undefined, BOT, desired), "set");
-  assert.equal(headerUpdate({ value: "" }, BOT, desired), "set");
-  assert.equal(headerUpdate({ value: "Model: Claude Sonnet 5", creator: BOT }, BOT, desired), "set");
-  assert.equal(headerUpdate({ value: desired, creator: BOT }, BOT, desired), "skip");
-  assert.equal(headerUpdate({ value: "my own notes", creator: "U0HUMAN" }, BOT, desired), "skip");
-  assert.equal(
-    headerUpdate({ value: "Using Claude Opus 4.8 here. <https://claw.acme.dev>", creator: BOT }, BOT, desired),
-    "skip",
-  );
-});
-
-function headerHarness(
-  existing?: { value?: string; creator?: string },
-  model = "Claude Opus 4.8",
-  kind: "dm" | "channel" = "dm",
-) {
-  const calls = { info: 0, set: 0 };
-  let current = existing;
-  const client = {
-    conversations: {
-      info: async () => {
-        calls.info += 1;
-        if (!current) return { channel: {} };
-        return { channel: kind === "dm" ? { topic: current } : { purpose: current } };
-      },
-      setTopic: async ({ topic: value }: { channel: string; topic: string }) => {
-        calls.set += 1;
-        current = { value, creator: "U0BOT" };
-        return {};
-      },
-      setPurpose: async ({ purpose: value }: { channel: string; purpose: string }) => {
-        calls.set += 1;
-        current = { value, creator: "U0BOT" };
-        return {};
-      },
-    },
-  };
-  const raw = createSurfaceHeaderEnsurer({
-    headerFacts: async () => ({ agentLabel: "Quartermaster", modelName: model }),
-    webUiPublicUrl: "https://claw.acme.dev",
-    ids: { botUserId: "U0BOT" },
-  });
-  const scope = kind === "dm" ? "personal:user.one@acme.dev" : "channel:C1";
-  const ensure = (c: unknown, channel: string) => raw(c as never, channel, scope, kind);
-  const flush = async (): Promise<void> => {
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-  };
-  return { client, calls, ensure, flush, read: () => current, scope };
-}
-
-test("surface header ensurer writes the header once, then goes quiet", async () => {
-  const h = headerHarness();
-  h.ensure(h.client, "D1");
-  await h.flush();
-  assert.equal(h.calls.set, 1);
-  assert.equal(
-    h.read()?.value,
-    "Quartermaster is using Claude Opus 4.8 here. <https://claw.acme.dev/projects/user.one|More settings>",
-  );
-  h.ensure(h.client, "D1");
-  await h.flush();
-  assert.equal(h.calls.info, 1, "the settled memo spares a steady-state DM both calls");
-  assert.equal(h.calls.set, 1);
-});
-
-test("surface header ensurer collapses a burst on one channel into a single write", async () => {
-  let infos = 0;
-  let sets = 0;
-  const client = {
-    conversations: {
-      info: async () => {
-        infos += 1;
-        await new Promise((r) => setTimeout(r, 5));
-        return { channel: {} };
-      },
-      setTopic: async () => {
-        sets += 1;
-        return {};
-      },
-    },
-  };
-  const ensure = createSurfaceHeaderEnsurer({
-    headerFacts: async () => ({ agentLabel: "Quartermaster", modelName: "Claude Opus 4.8" }),
-    webUiPublicUrl: "https://claw.acme.dev",
-    ids: { botUserId: "U0BOT" },
-  });
-  for (let i = 0; i < 5; i++) ensure(client as any, "D1", "personal:user.one@acme.dev", "dm");
-  await new Promise((r) => setTimeout(r, 60));
-  assert.equal(infos, 1, "the in-flight guard spares the concurrent probes");
-  assert.equal(sets, 1);
-});
-
-test("a model change during an in-flight ensure is re-run, not dropped", async () => {
-  let model = "Claude Opus 4.8";
-  const purposes: string[] = [];
-  const client = {
-    conversations: {
-      info: async () => {
-        await new Promise((r) => setTimeout(r, 15));
-        return { channel: { purpose: {} } };
-      },
-      setPurpose: async ({ purpose }: { channel: string; purpose: string }) => {
-        purposes.push(purpose);
-        return {};
-      },
-    },
-  };
-  const ensure = createSurfaceHeaderEnsurer({
-    headerFacts: async () => ({ agentLabel: "QM", modelName: model }),
-    webUiPublicUrl: "https://claw.acme.dev",
-    ids: { botUserId: "U0BOT" },
-  });
-  ensure(client as any, "C1", "channel:C1", "channel");
-  model = "Claude Haiku 4.5";
-  ensure(client as any, "C1", "channel:C1", "channel");
-  await new Promise((r) => setTimeout(r, 150));
-  assert.deepEqual(
-    purposes.map((p) => p.split(" <")[0]),
-    ["QM is using Claude Opus 4.8 here.", "QM is using Claude Haiku 4.5 here."],
-    "the change that landed mid-probe still reaches the description",
-  );
-});
-
-test("surface header ensurer caps its per-channel memo", async () => {
-  const client = {
-    conversations: { info: async () => ({ channel: {} }), setTopic: async () => ({}) },
-  };
-  const ensure = createSurfaceHeaderEnsurer({
-    headerFacts: async () => ({ agentLabel: "Quartermaster", modelName: "Claude Opus 4.8" }),
-    webUiPublicUrl: "https://claw.acme.dev",
-    ids: { botUserId: "U0BOT" },
-    maxTracked: 3,
-  });
-  for (let i = 0; i < 10; i++) {
-    ensure(client as any, `D${i}`, "personal:user.one@acme.dev", "dm");
-    await new Promise((r) => setTimeout(r, 2));
-  }
-  let reprobed = 0;
-  const spy = {
-    conversations: {
-      info: async () => {
-        reprobed += 1;
-        return { channel: {} };
-      },
-      setTopic: async () => ({}),
-    },
-  };
-  ensure(spy as any, "D0", "personal:user.one@acme.dev", "dm");
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(reprobed, 1, "an evicted channel is re-probed, so the map cannot grow forever");
-});
-
-test("surface header ensurer writes a channel's description, not its topic", async () => {
-  const h = headerHarness(undefined, "Claude Opus 4.8", "channel");
-  h.ensure(h.client, "C1");
-  await h.flush();
-  assert.equal(h.calls.set, 1);
-  assert.equal(
-    h.read()?.value,
-    "Quartermaster is using Claude Opus 4.8 here. <https://claw.acme.dev/projects/channel/C1|More settings>",
-    "a channel shows ITS scope's default model and links to ITS project page",
-  );
-});
-
-test("surface header ensurer writes no channel header where an external member could read it", async () => {
-  for (const shape of [{ is_ext_shared: true }, { is_mpim: true }]) {
-    let sets = 0;
-    const client = {
-      conversations: {
-        info: async () => ({ channel: { ...shape, purpose: {} } }),
-        setPurpose: async () => {
-          sets += 1;
-          return {};
-        },
-      },
-    };
-    const ensure = createSurfaceHeaderEnsurer({
-      headerFacts: async () => ({ agentLabel: "Quartermaster", modelName: "Claude Opus 4.8" }),
-      webUiPublicUrl: "https://claw.acme.dev",
-      ids: { botUserId: "U0BOT" },
-    });
-    ensure(client as any, "C1", "channel:C1", "channel");
-    await new Promise((r) => setTimeout(r, 30));
-    assert.equal(sets, 0, `a ${JSON.stringify(shape)} conversation is not the bot's to describe`);
-  }
-});
-
-test("surface header ensurer never clobbers a human-written channel description", async () => {
-  const h = headerHarness({ value: "Where we plan the launch", creator: "U0HUMAN" }, "Claude Opus 4.8", "channel");
-  h.ensure(h.client, "C1");
-  await h.flush();
-  assert.equal(h.calls.set, 0, "a description a human wrote is theirs");
-  assert.equal(h.read()?.value, "Where we plan the launch");
-});
-
-test("scopeSurfaceUrl deep-links each context to its own project page", () => {
-  assert.equal(scopeSurfaceUrl("https://claw.acme.dev/", "channel:C1"), "https://claw.acme.dev/projects/channel/C1");
-  assert.equal(
-    scopeSurfaceUrl("https://claw.acme.dev", "personal:user.one@acme.dev"),
-    "https://claw.acme.dev/projects/user.one",
-  );
-  assert.equal(
-    scopeSurfaceUrl("https://claw.acme.dev", "personal:User.Two@acme.dev"),
-    "https://claw.acme.dev/projects/user.two",
-  );
-  assert.equal(
-    scopeSurfaceUrl("https://claw.acme.dev", "personal:unsafe+slug@acme.dev"),
-    "https://claw.acme.dev/contexts?scope=personal%3Aunsafe%2Bslug%40acme.dev",
-  );
-  assert.equal(scopeSurfaceUrl("https://claw.acme.dev", "group:G1"), "https://claw.acme.dev/projects/group/G1");
-  assert.equal(scopeSurfaceUrl("https://claw.acme.dev", "team:T1"), "https://claw.acme.dev/contexts?scope=team%3AT1");
-  assert.equal(scopeSurfaceUrl(undefined, "channel:C1"), undefined);
-  assert.equal(scopeSurfaceUrl("https://claw.acme.dev", ""), undefined);
-});
-
-test("surface header ensurer never clobbers a human-written topic", async () => {
-  const h = headerHarness({ value: "standup notes", creator: "U0HUMAN" });
-  h.ensure(h.client, "D1");
-  await h.flush();
-  assert.equal(h.calls.set, 0);
-  assert.equal(h.read()?.value, "standup notes");
-});
-
-test("surface header ensurer swallows a Slack failure instead of surfacing it to the turn", async () => {
-  const ensure = createSurfaceHeaderEnsurer({
-    headerFacts: async () => {
-      throw new Error("core unreachable");
-    },
-    webUiPublicUrl: "https://claw.acme.dev",
-    ids: { botUserId: "U0BOT" },
-  });
-  assert.doesNotThrow(() => ensure({} as any, "D1", "personal:user.one@acme.dev", "dm"));
-  for (let i = 0; i < 12; i++) await Promise.resolve();
 });

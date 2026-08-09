@@ -3,7 +3,7 @@ import bolt from "@slack/bolt";
 import { WebClient } from "@slack/web-api";
 import { createDeduper, createThreadTracker } from "./lib.ts";
 import { installDevIntrospection } from "./dev-introspection.ts";
-import { setDefaultBotIdentity, createSurfaceHeaderEnsurer, type SurfaceHeaderClient } from "./delivery.ts";
+import { setDefaultBotIdentity } from "./delivery.ts";
 import { NO_RETRY, type SlackPluginConfig, normalizeSlackApiUrl, slackPluginConfigFromEnv } from "./config.ts";
 import { createCoreBridge } from "./core-bridge.ts";
 import { createAckEmojiPicker } from "./ack-emoji.ts";
@@ -131,15 +131,6 @@ export async function startSlackPlugin(
   });
   const approvals = createApprovals({ core, bridge, directory, threads });
   const feedback = createFeedback(core);
-  const ensureHeader = createSurfaceHeaderEnsurer({
-    headerFacts: (scope) => core.surfaceHeaderFacts(scope as Parameters<typeof core.surfaceHeaderFacts>[0]),
-    webUiPublicUrl: cfg.webUiPublicUrl,
-    ids,
-  });
-  core.onScopeModelChanged((scope) => {
-    const channel = scope.startsWith("channel:") ? scope.slice("channel:".length) : "";
-    if (channel) ensureHeader(app.client as unknown as SurfaceHeaderClient, channel, scope, "channel");
-  });
   const handler = createTurnHandler({
     bridge,
     directory,
@@ -154,7 +145,6 @@ export async function startSlackPlugin(
     ...(devIntrospection ? { markEvent: () => devIntrospection.markEvent() } : {}),
     botToken: BOT_TOKEN,
     ...(TRUSTED_FILE_HOST ? { trustedFileHost: TRUSTED_FILE_HOST } : {}),
-    ensureHeader,
   });
   approvals.registerActions(app);
   feedback.registerActions(app);
@@ -165,7 +155,6 @@ export async function startSlackPlugin(
     ids,
     deduper,
     ...(cfg.webUiPublicUrl ? { webUiPublicUrl: cfg.webUiPublicUrl } : {}),
-    ensureHeader,
   });
   const surfaceContext = createSurfaceContextFulfiller({
     core,

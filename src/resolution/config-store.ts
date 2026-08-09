@@ -166,7 +166,6 @@ export interface ScopedConfigStore {
   acknowledgeRuntimeSelection(id: ScopeId): void;
   acknowledgeRuntimeSelectionLatest(id: ScopeId): Promise<void>;
   getRuntimeSelectionDurable(id: ScopeId): Promise<ScopedRuntimeSelection | null>;
-  onRuntimeSelectionChanged(listener: (id: ScopeId) => void): void;
   getApprovedHarnesses(): string[] | null;
   setApprovedHarnesses(ids: string[] | null): void;
   getApprovedHarnessesDurable(): Promise<string[] | null>;
@@ -278,16 +277,6 @@ export function createMemoryConfigStore(
     });
     pendingWrites.set(key, pending);
     void pending.catch(persistWarn(what));
-  };
-  const runtimeSelectionListeners = new Set<(id: ScopeId) => void>();
-  const noteRuntimeSelectionChanged = (id: ScopeId): void => {
-    for (const listener of runtimeSelectionListeners) {
-      try {
-        listener(id);
-      } catch (e) {
-        console.error("[config] runtime-selection listener failed:", e);
-      }
-    }
   };
   const connectorClients = opts.connectorClients ?? createMemoryMap<StoredConnectorClient>();
   const connectorKey = deriveConnectorKey(opts.connectorSecretKey ?? randomBytes(32), "connector-clients");
@@ -646,7 +635,6 @@ export function createMemoryConfigStore(
         baseModels.set(id, row);
         persist(`model:${id}`, "base model", () => baseModelStore.put(id, row));
       }
-      noteRuntimeSelectionChanged(id);
     },
     getRuntimeSelection(id) {
       const row = baseModels.get(id);
@@ -664,7 +652,6 @@ export function createMemoryConfigStore(
       if (selection === null) {
         baseModels.delete(id);
         persist(`model:${id}`, "runtime selection", () => baseModelStore.delete(id));
-        noteRuntimeSelectionChanged(id);
         return;
       }
       const orgRow = baseModels.get(org);
@@ -675,7 +662,6 @@ export function createMemoryConfigStore(
           : { scopeId: id, ...selection, orgRevision: orgRow?.revision ?? 0 };
       baseModels.set(id, row);
       persist(`model:${id}`, "runtime selection", () => baseModelStore.put(id, row));
-      noteRuntimeSelectionChanged(id);
     },
     async setRuntimeSelectionLatest(id, selection) {
       await writeQueue(`model:${id}`, async () => {
@@ -693,7 +679,6 @@ export function createMemoryConfigStore(
         await baseModelStore.put(id, row);
         baseModels.set(id, row);
       });
-      noteRuntimeSelectionChanged(id);
     },
     acknowledgeRuntimeSelection(id) {
       const row = baseModels.get(id);
@@ -712,9 +697,6 @@ export function createMemoryConfigStore(
         await baseModelStore.put(id, next);
         baseModels.set(id, next);
       });
-    },
-    onRuntimeSelectionChanged(listener) {
-      runtimeSelectionListeners.add(listener);
     },
     getRuntimeSelectionDurable: async (id) => {
       const row = await baseModelStore.get(id);

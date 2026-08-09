@@ -9,11 +9,17 @@ export function deepLinkPath(
   sessionId: string | null,
   contextScope?: string | null,
   itemId?: string | null,
+  pendingProject?: string | null,
 ): string {
   const b = base.replace(/\/$/, "");
   if (view === "contexts" && contextScope) {
     if (itemId) throw new Error("the contexts view is addressed by scope, not by item id");
     return `${b}/contexts?scope=${encodeURIComponent(contextScope)}`;
+  }
+  if (view === "contexts" && pendingProject) {
+    const shared = /^(channel|group):(.+)$/.exec(pendingProject);
+    if (shared?.[1] && shared[2]) return `${b}/projects/${shared[1]}/${encodeURIComponent(shared[2])}`;
+    return `${b}/projects/${encodeURIComponent(pendingProject)}`;
   }
   if (view !== "chats") return `${b}/${encodeURIComponent(view)}${itemId ? `/${encodeURIComponent(itemId)}` : ""}`;
   if (itemId) throw new Error("the chats view is addressed by session, not by item id");

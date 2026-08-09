@@ -115,6 +115,33 @@ let contextsResetSeq = 0;
 let contextsFetchSeq = 0;
 let contextsQuery = "";
 let contextsWorkspaceFilter: "active" | "all" = "active";
+let pendingProject: string | null = null;
+let pendingProjectGeneration = 0;
+
+export function pendingProjectLink(): string | null {
+  return pendingProject;
+}
+
+export function clearPendingProjectLink(): void {
+  pendingProject = null;
+  pendingProjectGeneration++;
+}
+
+function pendingProjectNotice(slug: string): string {
+  const kind = slug.startsWith("group:") ? "group conversation" : "channel";
+  return `That ${kind}'s project page isn't open to you. If the agent only just joined, it may still be syncing — refresh to try again. Otherwise you're not a member of it, or it isn't one the agent can share.`;
+}
+
+export async function openProjectDeepLink(slug: string): Promise<void> {
+  const generation = pendingProjectGeneration;
+  const scope = resolveProjectScope(await ensureContexts(), slug);
+  if (generation !== pendingProjectGeneration) return;
+  if (!scope) {
+    pendingProject = slug;
+    return;
+  }
+  selectScope(scope);
+}
 
 async function fetchContexts(): Promise<CoreContext[]> {
   const fetchSeq = ++contextsFetchSeq;
@@ -158,6 +185,7 @@ export function resetContextsState(): void {
   createProjectOpener = null;
   contextsQuery = "";
   contextsWorkspaceFilter = "active";
+  clearPendingProjectLink();
 }
 
 export async function renderContexts(): Promise<void> {
@@ -174,6 +202,11 @@ export async function renderContexts(): Promise<void> {
     contextsNotice = errMessage(e, "Failed to load contexts.");
   }
   contextsLoading = false;
+  if (pendingProject) {
+    await openProjectDeepLink(pendingProject);
+    if (seq !== appState.viewRenderSeq || appState.currentView !== "contexts") return;
+    syncUrlFromState();
+  }
   if (
     contextsState.selected &&
     contextsState.list.some((c) => c.scopeId === contextsState.selected) &&
@@ -226,7 +259,7 @@ export function personalScopeId(): string | null {
   return contextsState.list.find((c) => c.kind === "personal")?.scopeId ?? null;
 }
 
-export function resolveProjectScope(contexts: readonly CoreContext[], slug: string): string | null {
+function resolveProjectScope(contexts: readonly CoreContext[], slug: string): string | null {
   if (slug.startsWith("channel:") || slug.startsWith("group:")) {
     return contexts.some((context) => context.scopeId === slug) ? slug : null;
   }
@@ -317,7 +350,9 @@ function drawContexts(): void {
 }
 
 function gridTpl(): TemplateResult {
-  const status = contextsNotice || (contextsLoading && contextsState.list.length === 0 ? "Loading projects…" : "");
+  const loading = contextsLoading && contextsState.list.length === 0 ? "Loading projects…" : "";
+  const status =
+    contextsNotice || (pendingProject && !contextsLoading ? pendingProjectNotice(pendingProject) : "") || loading;
   const q = contextsQuery.trim().toLowerCase();
   const matches = (context: CoreContext) => {
     const meta = contextMeta(context);
@@ -1191,6 +1226,17 @@ function contextSessionRow(s: CoreSession): TemplateResult {
   `;
 }
 
+function selectScope(scopeId: string | null): void {
+  contextsState.selected = scopeId;
+  pendingProject = null;
+  contextsState.resources = null;
+  contextsState.resourcesScope = null;
+  contextsState.resourcesNotice = "";
+  contextsState.resourcesLoading = false;
+  resetAmbientPolicy();
+  resetContextModel();
+}
+
 function selectContext(scopeId: string | null): void {
   memberSearchSeq++;
   cancelMemberSearchTimer();
@@ -1200,13 +1246,7 @@ function selectContext(scopeId: string | null): void {
   contextsState.memberSearching = false;
   contextsState.memberError = "";
   contextsState.memberSearchedQuery = "";
-  contextsState.selected = scopeId;
-  contextsState.resources = null;
-  contextsState.resourcesScope = null;
-  contextsState.resourcesNotice = "";
-  contextsState.resourcesLoading = false;
-  resetAmbientPolicy();
-  resetContextModel();
+  selectScope(scopeId);
   syncUrlFromState();
   drawContexts();
   if (scopeId) {
