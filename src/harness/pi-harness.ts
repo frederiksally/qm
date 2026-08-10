@@ -1261,6 +1261,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     tapeMode?: "shadow" | "serve",
     tapeFold?: unknown[],
     tape?: HarnessTurnInput["tape"],
+    workspaceDir?: string,
   ): Promise<{ entry: TurnSession; compileMs: number; tapeWriteFailed: boolean }> {
     const compileStart = Date.now();
     const cacheBoundary =
@@ -1329,7 +1330,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         }),
         noTools: "builtin",
         sessionManager: SessionManager.inMemory(undefined, { id: sessionId }),
-        cwd,
+        cwd: workspaceDir ?? cwd,
         agentDir,
       }));
     } catch (err) {
@@ -1479,6 +1480,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeMode,
           turn.tapeFold,
           turn.tape,
+          turn.workspaceDir,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;

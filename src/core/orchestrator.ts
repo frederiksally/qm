@@ -2069,6 +2069,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(!partial && messageTs ? { triggerTs: messageTs } : {}),
             ...(!partial && entryTs ? { entryTs } : {}),
             ...(extras.environment ? { environment: extras.environment } : {}),
+            ...(scopeProfile.spec?.workdir ? { workspaceDir: scopeProfile.spec.workdir } : {}),
             ...(extras.priorTurns?.length ? { priorTurns: extras.priorTurns } : {}),
             ...(extras.overheard?.length ? { overheard: extras.overheard } : {}),
             ...(extras.attachments?.length ? { attachments: extras.attachments } : {}),
