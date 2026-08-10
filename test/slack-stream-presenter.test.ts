@@ -311,6 +311,64 @@ test("activity updates replace one stable card and preserve Unicode titles", asy
   assert.equal(String(chunks[0]?.title).endsWith("😀"), true);
 });
 
+test("a placeholder step is replaced by real activity and completed on finish", async () => {
+  const chunks: Array<Record<string, unknown>> = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append(args: { chunks?: Array<Record<string, unknown>> }) {
+      this.ts ??= "S1";
+      chunks.push(...(args.chunks ?? []));
+    },
+    async stop() {},
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async () => {},
+    finalize: async () => {},
+    remove: async () => {},
+  });
+  presenter.pushActivity([{ id: "delayed", title: "Working on it", state: "in_progress" }]);
+  presenter.pushActivity([{ id: "tool-1", title: "Looking up relevant context", state: "in_progress" }]);
+  assert.equal(await presenter.finish("done"), "delivered");
+  assert.deepEqual(
+    chunks.map((chunk) => [chunk.id, chunk.title, chunk.status]),
+    [
+      ["current_activity", "Working on it", "in_progress"],
+      ["current_activity", "Looking up relevant context", "in_progress"],
+      ["current_activity", "Looking up relevant context", "complete"],
+    ],
+  );
+});
+
+test("activity pushed after finish or discard is dropped", async () => {
+  const appends: Array<{ markdown_text?: string; chunks?: Array<Record<string, unknown>> }> = [];
+  const stops: Array<{ markdown_text?: string }> = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append(args: { markdown_text?: string; chunks?: Array<Record<string, unknown>> }) {
+      this.ts ??= "S1";
+      appends.push(args);
+    },
+    async stop(args: { markdown_text?: string } = {}) {
+      stops.push(args);
+    },
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async () => {},
+    finalize: async () => {},
+    remove: async () => {},
+  });
+  presenter.pushActivity([{ id: "delayed", title: "Working on it", state: "in_progress" }]);
+  assert.equal(await presenter.finish("done"), "delivered");
+  presenter.pushDelta("late text");
+  presenter.beginToolWork();
+  presenter.pushActivity([{ id: "late", title: "Late activity", state: "in_progress" }]);
+  assert.equal(appends.length, 2);
+  assert.equal(stops.length, 1);
+  assert.equal(appends.every((append) => append.chunks?.[0]?.title === "Working on it"), true);
+});
+
 test("a post-flush finalize failure never permits a duplicate fallback post", async () => {
   const streamer = {
     ts: undefined as string | undefined,
@@ -333,11 +391,13 @@ test("a post-flush finalize failure never permits a duplicate fallback post", as
   assert.equal(await presenter.finish("partial"), "recoverable");
 });
 
-test("discard removes an opened stream and leaves a never-opened stream alone", async () => {
+test("discard removes an opened stream, then drops later pushes", async () => {
   const removed: string[] = [];
+  const appends: string[] = [];
   const streamer = {
     ts: undefined as string | undefined,
     async append() {
+      appends.push("append");
       this.ts = "S1";
     },
     async stop() {},
@@ -348,8 +408,10 @@ test("discard removes an opened stream and leaves a never-opened stream alone", 
     finalize: async () => {},
     remove: async (ts) => void removed.push(ts),
   });
+  presenter.pushDelta("opened");
   await presenter.discard();
-  presenter.pushDelta("partial");
-  await presenter.discard();
+  presenter.pushDelta("dropped");
+  presenter.pushActivity([{ id: "late", title: "Late activity", state: "in_progress" }]);
   assert.deepEqual(removed, ["S1"]);
+  assert.equal(appends.length, 1);
 });
