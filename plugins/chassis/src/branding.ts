@@ -1,6 +1,7 @@
 export interface OrgBranding {
   accent?: string;
   mark?: string;
+  markImage?: string;
   selfLabel?: string;
 }
 
@@ -60,13 +61,31 @@ const escapeAttr = (v: string): string =>
   v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export function injectBranding(html: string, branding: OrgBranding): string {
-  const { accent, mark, selfLabel } = branding;
+  const { accent, mark, markImage, selfLabel } = branding;
   let out = html;
   if (selfLabel) {
     out = out.replace(
       /(<meta name="brand-self-label" content=")[^"]*(")/,
       (_m, pre: string, post: string) => `${pre}${escapeAttr(selfLabel)}${post}`,
     );
+  }
+  if (markImage) {
+    if (/<meta name="brand-mark-image" content="[^"]*"/.test(out)) {
+      out = out.replace(
+        /(<meta name="brand-mark-image" content=")[^"]*(")/,
+        (_m, pre: string, post: string) => `${pre}${escapeAttr(markImage)}${post}`,
+      );
+    } else {
+      out = out.replace("</head>", () => `<meta name="brand-mark-image" content="${escapeAttr(markImage)}"></head>`);
+    }
+    if (/<link rel="icon"[^>]*href="[^"]*"/.test(out)) {
+      out = out.replace(
+        /(<link rel="icon"[^>]*href=")[^"]*(")/,
+        (_m, pre: string, post: string) => `${pre}${escapeAttr(markImage)}${post}`,
+      );
+    } else {
+      out = out.replace("</head>", () => `<link rel="icon" href="${escapeAttr(markImage)}"></head>`);
+    }
   }
   const decls = [...(accent ? [`--brand-accent:${accent}`] : []), ...(mark ? [`--brand-mark:"${mark}"`] : [])].join(
     ";",

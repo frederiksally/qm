@@ -498,7 +498,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     apply: async (ctx, _actor, scope) => {
       const bad = orgOnly(scope, "branding is org-wide");
       if (bad) return bad;
-      const body = (ctx.body ?? {}) as { accent?: unknown; mark?: unknown; selfLabel?: unknown };
+      const body = (ctx.body ?? {}) as { accent?: unknown; mark?: unknown; markImage?: unknown; selfLabel?: unknown };
       const clean = (v: unknown): string =>
         (typeof v === "string" ? v : "").replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029<>]/g, "").trim();
       const accent = clean(body.accent);
@@ -509,9 +509,21 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         .replace(/["\\{}]/g, "")
         .slice(0, 2);
       const selfLabel = clean(body.selfLabel).slice(0, 40);
+      const existing = ctx.deps.config!.getBranding(scope);
+      let markImage: string | undefined;
+      if (body.markImage === undefined) {
+        markImage = existing?.markImage;
+      } else {
+        const candidate = clean(body.markImage).slice(0, 200);
+        if (candidate && !/^(\/(?!\/)|https:\/\/)[A-Za-z0-9._~:%/+?&=#@!$,;()-]*$/.test(candidate)) {
+          return { error: "branding markImage must be a root-relative path or an https:// URL" };
+        }
+        markImage = candidate || undefined;
+      }
       const value: OrgBranding = {
         ...(accent ? { accent } : {}),
         ...(mark ? { mark } : {}),
+        ...(markImage ? { markImage } : {}),
         ...(selfLabel ? { selfLabel } : {}),
       };
       ctx.deps.config!.setBranding(scope, Object.keys(value).length ? value : null);

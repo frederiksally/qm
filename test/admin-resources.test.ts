@@ -209,6 +209,32 @@ test("branding governance validates, round-trips through surface-config, clears,
   }
 });
 
+test("branding markImage round-trips via PUT: preserve-on-absent, clear, and scheme rejection", async () => {
+  const srv = start();
+  const url = `${srv.base}/v1/admin/scopes/org:default-org/branding`;
+  const surfaceBranding = async () =>
+    (
+      (await (await fetch(`${srv.base}/v1/surface-config`)).json()) as {
+        branding?: { markImage?: string; selfLabel?: string };
+      }
+    ).branding;
+  const put = (body: unknown) => fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify(body) });
+  try {
+    assert.equal((await put({ markImage: "/brand.png" })).status, 200);
+    assert.equal((await surfaceBranding())?.markImage, "/brand.png");
+    assert.equal((await put({ selfLabel: "qm" })).status, 200);
+    assert.equal((await surfaceBranding())?.markImage, "/brand.png", "absent field preserves the stored image");
+    assert.equal((await surfaceBranding())?.selfLabel, "qm");
+    assert.equal((await put({ markImage: "//evil.example/x.png" })).status, 400);
+    assert.equal((await put({ markImage: "javascript:alert(1)" })).status, 400);
+    assert.equal((await surfaceBranding())?.markImage, "/brand.png", "rejected writes never store");
+    assert.equal((await put({ markImage: "" })).status, 200);
+    assert.equal((await surfaceBranding())?.markImage, undefined, "empty string clears");
+  } finally {
+    await srv.close();
+  }
+});
+
 test("surface-config filters persisted model choices to the active native harness", async () => {
   const srv = start("codex");
   try {
