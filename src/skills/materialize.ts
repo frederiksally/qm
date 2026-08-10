@@ -85,6 +85,20 @@ function renderedBody(resolution: SkillResolution): string {
     : body;
 }
 
+export function materializedContentDigests(resolved: SkillResolution[], bundles: SkillBundle[]): Set<string> {
+  const digests = new Set<string>();
+  const add = (content: string): void => {
+    digests.add(createHash("sha256").update(content, "utf8").digest("hex"));
+  };
+  for (const r of resolved) {
+    if (!r.skill) continue;
+    add(renderedBody(r));
+    for (const f of r.skill.manifest.files ?? []) add(f.content);
+  }
+  for (const b of bundles) for (const f of b.files) add(f.content);
+  return digests;
+}
+
 interface LayEntry {
   path: string;
   content: string;

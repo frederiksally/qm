@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import type { SkillFile, SkillResolution } from "../src/skills/skill-store.ts";
 import {
   createSkillMaterializer,
   materializeSkillIndex,
   materializeSkillTree,
+  materializedContentDigests,
   safeSkillDirName,
 } from "../src/skills/materialize.ts";
 import { computeBundleHash, type SkillBundle } from "../src/skills/skill-bundle-store.ts";
@@ -586,4 +588,20 @@ test("current() re-resolution keeps the folded index tree entries in step with t
   assert.equal(index.version, 3);
   assert.equal(index.skills.gamma.hash, tree.hash, "the folded index entry mirrors the materialized tree state");
   assert.deepEqual(index.skills.gamma.skillPaths, ["skills/gamma/SKILL.md", "skills/gamma/s.py"]);
+});
+
+test("materializedContentDigests covers skill bodies, files, and bundle files — and nothing else", () => {
+  const skills = [
+    res("alpha", "alpha body", [{ path: "tool.py", content: "print(1)" }]),
+    res("packed", "packed body", [], "pack-1"),
+  ];
+  const bundles = [bundle("pack-1", [{ path: "shared.md", content: "shared content" }])];
+  const digests = materializedContentDigests(skills, bundles);
+  const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
+  assert.ok(digests.has(sha("alpha body")));
+  assert.ok(digests.has(sha("print(1)")));
+  assert.ok(digests.has(sha("packed body\n\n## Pack files\nResolve repository-relative shared-file paths against `skills/.packs/pack-1/`; pack files never overwrite the workspace root.")));
+  assert.ok(digests.has(sha("shared content")));
+  assert.ok(!digests.has(sha("attacker planted this")));
+  assert.ok(!digests.has(sha("alpha body ")), "byte-exact match required, not a prefix/trimmed match");
 });

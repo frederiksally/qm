@@ -11,7 +11,6 @@ import { errMessage } from "../util/errors.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
 import { unscreenedNotice, UNSCREENED_PREFIX, type SecurityScreenVerdict } from "../security/security-posture.ts";
-import { SKILLS_DIR } from "../skills/materialization-paths.ts";
 import { CAPABILITY_TTL_MS } from "../auth/capability-token.ts";
 import { hasBrainQueryCredentials } from "../memory/brain-query-service.ts";
 
@@ -714,10 +713,6 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       if (!tc) return text("[error] no active tool context");
       await recordCall(callId, { tool: "read", path: params.path });
       const { content, sourceScopeId } = await tc.read(params.path);
-      const normalized = params.path.replace(/^\.\/+/, "");
-      const platformMaterialized =
-        !normalized.includes("..") &&
-        (normalized.startsWith(`${SKILLS_DIR}/`) || normalized.startsWith(`global/${SKILLS_DIR}/`));
       return recordResult(
         callId,
         {
@@ -729,7 +724,6 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         text(content ?? `[no such file: ${params.path}]`),
         content === null,
         sourceScopeId,
-        platformMaterialized,
       );
     },
   });
