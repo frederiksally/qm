@@ -40,7 +40,7 @@ import { signedHeaders, withSourceAuthNonce } from "../../chassis/src/core-clien
 import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
-import { json, escapeHtml, serveEmojiFavicon } from "../../chassis/src/http.ts";
+import { json, escapeHtml, serveBrandImage, serveEmojiFavicon } from "../../chassis/src/http.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -834,6 +834,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
 
   if (method === "GET" && (pathname === "/favicon.ico" || pathname === "/favicon.svg")) {
+    const brandImageFile = process.env.BRAND_MARK_IMAGE_FILE;
+    if (brandImageFile) return serveBrandImage(res, brandImageFile, "max-age=86400");
     return serveEmojiFavicon(res, process.env.PORTAL_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F", "max-age=86400");
   }
 

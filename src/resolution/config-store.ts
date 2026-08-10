@@ -91,6 +91,7 @@ export interface PersistedPeopleDirectoryUrl {
 export interface OrgBranding {
   accent?: string;
   mark?: string;
+  markImage?: string;
   selfLabel?: string;
 }
 export interface PersistedBranding {

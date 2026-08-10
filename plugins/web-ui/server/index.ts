@@ -16,6 +16,7 @@ import {
   readBody as readBodyCapped,
   cookie,
   PayloadTooLargeError,
+  serveBrandImage,
   serveEmojiFavicon,
 } from "../../chassis/src/http.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
@@ -50,6 +51,7 @@ const brandingCache = createBrandingCache(async () => {
   return {
     ...(typeof b?.accent === "string" ? { accent: b.accent } : {}),
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
+    ...(typeof b?.markImage === "string" ? { markImage: b.markImage } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
   };
 });
@@ -714,7 +716,11 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const method = req.method ?? "GET";
 
   if (method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
+  const brandImageFile = process.env.BRAND_MARK_IMAGE_FILE;
+  if (method === "GET" && path === "/brand.png" && brandImageFile)
+    return serveBrandImage(res, brandImageFile, "public, max-age=86400");
   if (method === "GET" && path === "/favicon.svg") {
+    if (brandImageFile) return serveBrandImage(res, brandImageFile, "no-cache");
     return serveEmojiFavicon(res, process.env.WEB_UI_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F", "no-cache");
   }
 

@@ -1025,6 +1025,11 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
     pick(branding?.mark, dflt?.mark)
       ?.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029"\\<>{}]/g, "")
       .slice(0, 2) || undefined;
+  const markImageCandidate = pick(branding?.markImage, dflt?.markImage)?.slice(0, 200);
+  const markImage =
+    markImageCandidate && /^(\/(?!\/)|https:\/\/)[A-Za-z0-9._~:%/+?&=#@!$,;()-]*$/.test(markImageCandidate)
+      ? markImageCandidate
+      : undefined;
   const selfLabel =
     pick(branding?.selfLabel, dflt?.selfLabel)
       ?.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, "")
@@ -1032,6 +1037,7 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
   const resolvedBranding = {
     ...(accent ? { accent } : {}),
     ...(mark ? { mark } : {}),
+    ...(markImage ? { markImage } : {}),
     ...(selfLabel ? { selfLabel } : {}),
   };
   return sendJson(res, 200, {

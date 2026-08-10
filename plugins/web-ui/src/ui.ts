@@ -6,7 +6,14 @@ export function brandName(): string {
   return document.querySelector<HTMLMetaElement>('meta[name="brand-self-label"]')?.content || "QM";
 }
 
+export function brandMarkImage(): string {
+  if (typeof document === "undefined") return "";
+  return document.querySelector<HTMLMetaElement>('meta[name="brand-mark-image"]')?.content || "";
+}
+
 export function brandMark(): TemplateResult {
+  const image = brandMarkImage();
+  if (image) return html`<img class="brand-mark brand-mark-img" src=${image} alt="" aria-hidden="true" />`;
   return html`<span class="brand-mark" aria-hidden="true"></span>`;
 }
 

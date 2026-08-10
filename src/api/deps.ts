@@ -85,7 +85,7 @@ export interface ServerDeps {
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
-  brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
+  brandingDefault?: { accent?: string; mark?: string; markImage?: string; selfLabel?: string };
   harnessId?: string;
   admin?: AdminService;
   rateLimiter?: RateLimiter;
