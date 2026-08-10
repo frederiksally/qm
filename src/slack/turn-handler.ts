@@ -391,10 +391,13 @@ export function createTurnHandler(deps: {
             task_display_mode: "dense",
           }),
         checkpoint: async (ts) => {
-          if (queuedRunId)
+          if (queuedRunId) {
             await checkpointRunDeliveryState(queuedRunId, {
               surface: { kind: "stream", channel: inc.channel, ts },
             });
+            return true;
+          }
+          return false;
         },
         finalize: async (ts, finalText, blocks) => {
           await updateSlackMessage(client, inc.channel, ts, finalText, blocks);

@@ -31,7 +31,10 @@ test("stream presenter forces a short first flush, checkpoints, and completes wi
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async (ts) => void calls.push(`checkpoint:${ts}`),
+    checkpoint: async (ts) => {
+      calls.push(`checkpoint:${ts}`);
+      return true;
+    },
     finalize: async (ts, text) => void calls.push(`finalize:${ts}:${text}`),
     remove: async () => {},
     onDelivered: (ts, text) => void calls.push(`delivered:${ts}:${text}`),
@@ -39,6 +42,36 @@ test("stream presenter forces a short first flush, checkpoints, and completes wi
   presenter.pushDelta("short");
   assert.equal(await presenter.finish("short"), "delivered");
   assert.deepEqual(calls, ["append", "checkpoint:S1", "stop", "delivered:S1:short"]);
+});
+
+test("a failed first checkpoint does not burn the durable record — it retries at finish", async () => {
+  let attempts = 0;
+  const calls: string[] = [];
+  const streamer = {
+    ts: undefined as string | undefined,
+    async append() {
+      calls.push("append");
+      this.ts = "S9";
+    },
+    async stop() {
+      calls.push("stop");
+    },
+  };
+  const presenter = createStreamPresenter({
+    create: () => streamer,
+    checkpoint: async (ts) => {
+      attempts += 1;
+      calls.push(`checkpoint:${ts}`);
+      return attempts >= 2;
+    },
+    finalize: async () => {},
+    remove: async () => {},
+  });
+  presenter.pushDelta("short");
+  assert.equal(await presenter.finish("short"), "delivered");
+  assert.ok(attempts >= 2, "checkpoint retried after the first attempt reported no durable record");
+  assert.deepEqual(calls.filter((c) => c === "append"), ["append"]);
+  assert.ok(calls.includes("stop"), "stream stopped natively once the durable record was written");
 });
 
 test("only the first short text append forces an SDK flush", async () => {
@@ -53,7 +86,7 @@ test("only the first short text append forces an SDK flush", async () => {
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -76,7 +109,7 @@ test("failure before a stream ts permits normal-post fallback", async () => {
       },
       async stop() {},
     }),
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -121,7 +154,7 @@ test("a direct stream never replaces a successfully streamed reply", async () =>
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => void calls.push("remove"),
   });
@@ -143,7 +176,7 @@ test("an empty terminal answer does not delete a successfully streamed reply", a
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => void calls.push("remove"),
   });
@@ -167,7 +200,7 @@ test("a tool turn keeps its narration, replaces activity, and appends only the a
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -194,7 +227,7 @@ test("a long tool narration always leaves room for the authoritative answer", as
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -218,7 +251,7 @@ test("markdown text fields split at Unicode-safe 12000-character boundaries", as
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -244,7 +277,7 @@ test("live text applies the same 40000-character ceiling as terminal delivery", 
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -270,7 +303,7 @@ test("a delta after exactly 40000 live characters cannot overflow the ceiling", 
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -292,7 +325,7 @@ test("activity updates replace one stable card and preserve Unicode titles", asy
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -323,7 +356,7 @@ test("a placeholder step is replaced by real activity and completed on finish", 
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -355,7 +388,7 @@ test("activity pushed after finish or discard is dropped", async () => {
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async () => {},
   });
@@ -381,7 +414,7 @@ test("a post-flush finalize failure never permits a duplicate fallback post", as
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {
       throw new Error("update failed");
     },
@@ -404,7 +437,7 @@ test("discard removes an opened stream, then drops later pushes", async () => {
   };
   const presenter = createStreamPresenter({
     create: () => streamer,
-    checkpoint: async () => {},
+    checkpoint: async () => true,
     finalize: async () => {},
     remove: async (ts) => void removed.push(ts),
   });

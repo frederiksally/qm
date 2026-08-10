@@ -55,7 +55,7 @@ const taskTitle = (title: string): string => Array.from(title).slice(0, 256).joi
 
 export function createStreamPresenter(deps: {
   create(): Streamer;
-  checkpoint(ts: string): Promise<void>;
+  checkpoint(ts: string): Promise<boolean>;
   finalize(ts: string, text: string, blocks?: Array<Record<string, unknown>>): Promise<void>;
   remove(ts: string): Promise<void>;
   onDelivered?(ts: string, text: string): Promise<void> | void;
@@ -114,8 +114,8 @@ export function createStreamPresenter(deps: {
   const ensure = (): Streamer => (streamer ??= deps.create());
   const checkpoint = async (): Promise<void> => {
     if (checkpointed || !streamer?.ts) return;
-    await deps.checkpoint(streamer.ts);
-    checkpointed = true;
+    const persisted = await deps.checkpoint(streamer.ts);
+    if (persisted) checkpointed = true;
   };
   const ensureCheckpoint = async (): Promise<boolean> => {
     if (checkpointed) return true;
