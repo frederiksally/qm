@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>QM Admin</title>
     <meta name="brand-self-label" content="Agent" />
+    <meta name="brand-mark-image" content="" />
     <style>
       :root {
         --bg: #fbfbfa;
@@ -96,6 +97,16 @@
         font-size: 13px;
         font-weight: 650;
         line-height: 1;
+      }
+      .brand.has-image::before {
+        content: none;
+      }
+      .brand img.brand-mark-img {
+        width: 23px;
+        height: 23px;
+        margin-right: 9px;
+        border-radius: 5px;
+        object-fit: cover;
       }
       .brand span {
         min-width: 0;
@@ -4217,7 +4228,7 @@
               <p class="governance-eyebrow">Temporary setup guide</p>
               <h1>Onboarding</h1>
               <p class="lead">
-                Get this QM instance ready for real conversations. Secrets are validated, encrypted in durable storage,
+                Get this <span class="js-brand-name">QM</span> instance ready for real conversations. Secrets are validated, encrypted in durable storage,
                 and never displayed again.
               </p>
             </div>
@@ -4225,13 +4236,13 @@
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-model-badge">Not ready</span>
                 <h2>1. Model provider</h2>
-                <p id="onboarding-model-summary">Add the key QM will use for its base model.</p>
+                <p id="onboarding-model-summary">Add the key <span class="js-brand-name">QM</span> will use for its base model.</p>
               </section>
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-slack-badge">Optional</span>
                 <h2>2. Slack app</h2>
                 <p id="onboarding-slack-summary">
-                  Create the QM app, install it, then add its bot and Socket Mode tokens.
+                  Create the <span class="js-brand-name">QM</span> app, install it, then add its bot and Socket Mode tokens.
                 </p>
                 <div class="foot">
                   <a
@@ -4240,7 +4251,7 @@
                     href="https://api.slack.com/apps?new_app=1"
                     target="_blank"
                     rel="noopener noreferrer"
-                    >Create QM Slack app ↗</a
+                    >Create&nbsp;<span class="js-brand-name">QM</span>&nbsp;Slack app ↗</a
                   >
                   <button type="button" data-onboarding-target="slack">Enter Slack tokens</button>
                 </div>
@@ -4288,7 +4299,7 @@
               <div class="head">
                 <h2>Custom providers</h2>
                 <p>
-                  Point QM at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
+                  Point <span class="js-brand-name">QM</span> at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
                   LiteLLM fronting many models. Keys are validated, stored write-only, and the models join the picker.
                 </p>
               </div>
@@ -5142,7 +5153,7 @@
                     href="https://api.slack.com/apps?new_app=1"
                     target="_blank"
                     rel="noopener noreferrer"
-                    >Create QM Slack app from manifest ↗</a
+                    >Create&nbsp;<span class="js-brand-name">QM</span>&nbsp;Slack app from manifest ↗</a
                   >
                 </p>
                 <p class="hint" id="slack-installation-state">Not configured.</p>
@@ -5267,6 +5278,21 @@
       // The header's product name and the tab title follow the org's assistant label.
       document.getElementById("brand-product").textContent = brandSelfLabel();
       document.title = `${brandSelfLabel()} Admin`;
+      const brandEl = document.querySelector(".brand");
+      if (brandEl) {
+        const imgUrl = document.querySelector('meta[name="brand-mark-image"]')?.getAttribute("content") || "";
+        if (imgUrl) {
+          const img = document.createElement("img");
+          img.className = "brand-mark-img";
+          img.src = imgUrl;
+          img.alt = "";
+          brandEl.prepend(img);
+          brandEl.classList.add("has-image");
+        }
+      }
+      document.querySelectorAll(".js-brand-name").forEach((el) => {
+        el.textContent = brandSelfLabel();
+      });
       let page = 1;
 
       const FOCUS_STALE_MS = 60000;
@@ -7463,7 +7489,7 @@
         );
         $("onboarding-slack-summary").textContent = slack.data.configured
           ? "Connected to " + (slack.data.teamName || slack.data.teamId || "a Slack workspace") + "."
-          : "Create the QM app, install it, then add its bot and Socket Mode tokens.";
+          : `Create the ${brandSelfLabel()} app, install it, then add its bot and Socket Mode tokens.`;
         if (slack.data.createUrl) $("onboarding-slack-create").href = slack.data.createUrl;
 
         const configured = (catalog.data.catalog || []).filter((item) => item.configured);

@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { createGzip, gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { signedRequestHeaders, withSourceAuthNonce } from "../../chassis/src/core-client.ts";
-import { json, readBody, cookie } from "../../chassis/src/http.ts";
+import { json, readBody, cookie, serveBrandImage } from "../../chassis/src/http.ts";
 import { createBrandingCache, injectBranding, type OrgBranding } from "../../chassis/src/branding.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import {
@@ -52,6 +52,7 @@ async function fetchBrand(): Promise<OrgBranding> {
   return {
     ...(typeof b?.accent === "string" ? { accent: b.accent } : {}),
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
+    ...(typeof b?.markImage === "string" ? { markImage: b.markImage } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
   };
 }
@@ -62,7 +63,7 @@ async function refreshBrandNow(): Promise<void> {
 }
 let shellCache: { key: string; html: string; gzip: Buffer; etag: string } | null = null;
 function brandedShell(branding: OrgBranding): { html: string; gzip: Buffer; etag: string } {
-  const key = JSON.stringify([branding.accent, branding.mark, branding.selfLabel]);
+  const key = JSON.stringify([branding.accent, branding.mark, branding.markImage, branding.selfLabel]);
   if (shellCache?.key === key) return shellCache;
   const html = injectBranding(BASE_HTML, branding);
   shellCache = {
@@ -334,6 +335,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   };
   if (method === "GET" && pathname === "/") return serveShell();
   if (method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
+  if (method === "GET" && (pathname === "/brand.png" || pathname === "/favicon.svg") && process.env.BRAND_MARK_IMAGE_FILE)
+    return serveBrandImage(res, process.env.BRAND_MARK_IMAGE_FILE, "public, max-age=86400");
 
   if (method === "GET" && (pathname === "/api/me" || pathname === "/api/whoami")) {
     const p = cookiePrincipal(req);

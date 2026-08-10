@@ -35,7 +35,7 @@ export interface Config {
   sandboxSecondaryBackend?: "aws" | "local" | "sprites";
   deployProvider: "docker" | "aws";
   egressServiceHosts?: string[];
-  brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
+  brandingDefault?: { accent?: string; mark?: string; markImage?: string; selfLabel?: string };
   modelId?: string;
   opencodeModel?: string;
   codexModel?: string;
@@ -470,8 +470,16 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
     clean(env.ORG_BRAND_MARK)
       .replace(/["\\{}]/g, "")
       .slice(0, 2) || undefined;
+  const markImageCandidate = clean(env.ORG_BRAND_MARK_IMAGE).slice(0, 200);
+  const markImage =
+    /^(\/|https:\/\/)[A-Za-z0-9._~:%/+?&=#@!$,;()-]*$/.test(markImageCandidate) ? markImageCandidate : undefined;
   const selfLabel = clean(env.ORG_BRAND_SELF_LABEL).slice(0, 40) || undefined;
-  const branding = { ...(accent ? { accent } : {}), ...(mark ? { mark } : {}), ...(selfLabel ? { selfLabel } : {}) };
+  const branding = {
+    ...(accent ? { accent } : {}),
+    ...(mark ? { mark } : {}),
+    ...(markImage ? { markImage } : {}),
+    ...(selfLabel ? { selfLabel } : {}),
+  };
   return Object.keys(branding).length ? branding : undefined;
 }
 

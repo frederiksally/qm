@@ -22,6 +22,12 @@ test("ORG_BRAND_* parses into a validated branding default", () => {
   assert.equal(loadConfig({ ORG_BRAND_ACCENT: "#abcde" }).brandingDefault, undefined);
   assert.deepEqual(loadConfig({ ORG_BRAND_MARK: 'a"bc' }).brandingDefault, { mark: "ab" });
   assert.equal(loadConfig({ ORG_BRAND_SELF_LABEL: "x".repeat(80) }).brandingDefault?.selfLabel?.length, 40);
+  assert.deepEqual(loadConfig({ ORG_BRAND_MARK_IMAGE: "/brand.png" }).brandingDefault, { markImage: "/brand.png" });
+  assert.deepEqual(loadConfig({ ORG_BRAND_MARK_IMAGE: "https://cdn.example.com/logo.svg" }).brandingDefault, {
+    markImage: "https://cdn.example.com/logo.svg",
+  });
+  assert.equal(loadConfig({ ORG_BRAND_MARK_IMAGE: "javascript:alert(1)" }).brandingDefault, undefined);
+  assert.equal(loadConfig({ ORG_BRAND_MARK_IMAGE: 'a"\u2019b' }).brandingDefault, undefined);
 });
 
 test("store kinds default to memory and accept postgres", () => {

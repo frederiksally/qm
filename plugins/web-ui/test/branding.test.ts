@@ -10,9 +10,10 @@ import { JSDOM } from "jsdom";
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", selfLabel: "QM" } }));
-  }
-  res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(
+      JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", markImage: "/brand.png", selfLabel: "QM" } }),
+    );
+  }res.writeHead(200, { "content-type": "application/json" });
   res.end("{}");
 });
 await new Promise<void>((r) => core.listen(0, r));
@@ -71,4 +72,61 @@ test("brandName() reads the injected self-label and falls back to the product na
     delete (globalThis as { document?: Document }).document;
   }
   assert.equal(brandName!(), "QM");
+});
+
+test("markImage is injected as meta and favicon on the first render", async () => {
+  const r = await fetch(`${base}/`, { headers: { cookie: "webuiuser=alice" } });
+  assert.equal(r.status, 200);
+  const html = await r.text();
+  assert.match(html, /<meta name="brand-mark-image" content="\/brand\.png"\s*\/?>/, "mark-image meta injected");
+  assert.match(html, /<link rel="icon" href="\/brand\.png"\s*\/?>/, "favicon follows the mark image");
+});
+
+test("injectBranding inserts the mark-image meta when the template lacks it", async () => {
+  const { injectBranding } = await import("../../chassis/src/branding.ts");
+  const out = injectBranding("<html><head><title>t</title></head><body></body></html>", {
+    markImage: "https://cdn.example.com/logo.svg",
+  });
+  assert.ok(
+    out.includes('<meta name="brand-mark-image" content="https://cdn.example.com/logo.svg">'),
+    "meta inserted",
+  );
+  assert.ok(
+    out.includes('<link rel="icon" href="https://cdn.example.com/logo.svg">'),
+    "favicon link inserted when absent",
+  );
+});
+
+test("brandMarkImage() reads the injected meta and falls back to empty", async () => {
+  const ui = await import("../src/ui.ts");
+  const brandMarkImage = (ui as { brandMarkImage?: () => string }).brandMarkImage;
+  assert.equal(typeof brandMarkImage, "function", "ui.ts exports brandMarkImage()");
+  const dom = new JSDOM('<head><meta name="brand-mark-image" content="/brand.png"></head>');
+  (globalThis as { document?: Document }).document = dom.window.document;
+  try {
+    assert.equal(brandMarkImage!(), "/brand.png");
+  } finally {
+    delete (globalThis as { document?: Document }).document;
+  }
+  assert.equal(brandMarkImage!(), "");
+});
+
+test("BRAND_MARK_IMAGE_FILE is served at /brand.png with the png content type", async () => {
+  const dir = join(distDir, ".brand-test");
+  mkdirSync(dir, { recursive: true });
+  const pngPath = join(dir, "brand.png");
+  writeFileSync(pngPath, Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"));
+  process.env.BRAND_MARK_IMAGE_FILE = pngPath;
+  try {
+    const r = await fetch(`${base}/brand.png`);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("content-type"), "image/png");
+    const body = Buffer.from(await r.arrayBuffer());
+    assert.equal(body.subarray(0, 4).toString("hex"), "89504e47", "png signature round-trips");
+
+    const fav = await fetch(`${base}/favicon.svg`);
+    assert.equal(fav.headers.get("content-type"), "image/png", "favicon prefers the brand image");
+  } finally {
+    delete process.env.BRAND_MARK_IMAGE_FILE;
+  }
 });
