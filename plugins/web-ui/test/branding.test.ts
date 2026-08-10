@@ -13,7 +13,8 @@ const core = createServer((req: IncomingMessage, res) => {
     return void res.end(
       JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", markImage: "/brand.png", selfLabel: "QM" } }),
     );
-  }res.writeHead(200, { "content-type": "application/json" });
+  }
+  res.writeHead(200, { "content-type": "application/json" });
   res.end("{}");
 });
 await new Promise<void>((r) => core.listen(0, r));
@@ -60,6 +61,11 @@ test("the vite template carries the self-label anchor the server injects into", 
   assert.match(template, /<meta name="brand-self-label" content="QM"\s*\/?>/);
 });
 
+test("the vite template carries the mark-image anchor the server injects into", () => {
+  const template = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(template, /<meta name="brand-mark-image" content=""\s*\/?>/);
+});
+
 test("brandName() reads the injected self-label and falls back to the product name", async () => {
   const ui = await import("../src/ui.ts");
   const brandName = (ui as { brandName?: () => string }).brandName;
@@ -87,10 +93,7 @@ test("injectBranding inserts the mark-image meta when the template lacks it", as
   const out = injectBranding("<html><head><title>t</title></head><body></body></html>", {
     markImage: "https://cdn.example.com/logo.svg",
   });
-  assert.ok(
-    out.includes('<meta name="brand-mark-image" content="https://cdn.example.com/logo.svg">'),
-    "meta inserted",
-  );
+  assert.ok(out.includes('<meta name="brand-mark-image" content="https://cdn.example.com/logo.svg">'), "meta inserted");
   assert.ok(
     out.includes('<link rel="icon" href="https://cdn.example.com/logo.svg">'),
     "favicon link inserted when absent",

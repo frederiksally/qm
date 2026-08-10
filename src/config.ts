@@ -471,8 +471,9 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
       .replace(/["\\{}]/g, "")
       .slice(0, 2) || undefined;
   const markImageCandidate = clean(env.ORG_BRAND_MARK_IMAGE).slice(0, 200);
-  const markImage =
-    /^(\/|https:\/\/)[A-Za-z0-9._~:%/+?&=#@!$,;()-]*$/.test(markImageCandidate) ? markImageCandidate : undefined;
+  const markImage = /^(\/(?!\/)|https:\/\/)[A-Za-z0-9._~:%/+?&=#@!$,;()-]*$/.test(markImageCandidate)
+    ? markImageCandidate
+    : undefined;
   const selfLabel = clean(env.ORG_BRAND_SELF_LABEL).slice(0, 40) || undefined;
   const branding = {
     ...(accent ? { accent } : {}),
@@ -579,13 +580,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const brainConfigured = Boolean(
     env.BRAIN_MCP_URL ||
-      env.BRAIN_AUTH ||
-      env.BRAIN_BEARER_TOKEN ||
-      env.BRAIN_RO_CLIENT_ID ||
-      env.BRAIN_RO_CLIENT_SECRET ||
-      env.BRAIN_QUERY_TOOL ||
-      env.BRAIN_PAGE_TOOL ||
-      env.BRAIN_RECENT_TOOL,
+    env.BRAIN_AUTH ||
+    env.BRAIN_BEARER_TOKEN ||
+    env.BRAIN_RO_CLIENT_ID ||
+    env.BRAIN_RO_CLIENT_SECRET ||
+    env.BRAIN_QUERY_TOOL ||
+    env.BRAIN_PAGE_TOOL ||
+    env.BRAIN_RECENT_TOOL,
   );
   if (brainConfigured) {
     if (!env.BRAIN_MCP_URL) throw new Error("BRAIN_MCP_URL is required when wiki reads are configured");

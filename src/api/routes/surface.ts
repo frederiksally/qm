@@ -1027,7 +1027,7 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
       .slice(0, 2) || undefined;
   const markImageCandidate = pick(branding?.markImage, dflt?.markImage)?.slice(0, 200);
   const markImage =
-    markImageCandidate && /^(\/|https:\/\/)[A-Za-z0-9._~:%/+?&=#@!$,;()-]*$/.test(markImageCandidate)
+    markImageCandidate && /^(\/(?!\/)|https:\/\/)[A-Za-z0-9._~:%/+?&=#@!$,;()-]*$/.test(markImageCandidate)
       ? markImageCandidate
       : undefined;
   const selfLabel =

@@ -335,7 +335,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   };
   if (method === "GET" && pathname === "/") return serveShell();
   if (method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
-  if (method === "GET" && (pathname === "/brand.png" || pathname === "/favicon.svg") && process.env.BRAND_MARK_IMAGE_FILE)
+  if (
+    method === "GET" &&
+    (pathname === "/brand.png" || pathname === "/favicon.svg") &&
+    process.env.BRAND_MARK_IMAGE_FILE
+  )
     return serveBrandImage(res, process.env.BRAND_MARK_IMAGE_FILE, "public, max-age=86400");
 
   if (method === "GET" && (pathname === "/api/me" || pathname === "/api/whoami")) {

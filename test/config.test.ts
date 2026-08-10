@@ -27,6 +27,7 @@ test("ORG_BRAND_* parses into a validated branding default", () => {
     markImage: "https://cdn.example.com/logo.svg",
   });
   assert.equal(loadConfig({ ORG_BRAND_MARK_IMAGE: "javascript:alert(1)" }).brandingDefault, undefined);
+  assert.equal(loadConfig({ ORG_BRAND_MARK_IMAGE: "//evil.example/x.png" }).brandingDefault, undefined);
   assert.equal(loadConfig({ ORG_BRAND_MARK_IMAGE: 'a"\u2019b' }).brandingDefault, undefined);
 });
 

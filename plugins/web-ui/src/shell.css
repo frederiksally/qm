@@ -189,10 +189,8 @@ body.resizing-sidebar {
   content: var(--brand-mark);
 }
 .brand-mark-img {
+  background: none;
   object-fit: cover;
-}
-.brand-mark-img::before {
-  content: none;
 }
 .brand-name {
   color: var(--foreground);

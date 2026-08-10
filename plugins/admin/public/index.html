@@ -4228,21 +4228,24 @@
               <p class="governance-eyebrow">Temporary setup guide</p>
               <h1>Onboarding</h1>
               <p class="lead">
-                Get this <span class="js-brand-name">QM</span> instance ready for real conversations. Secrets are validated, encrypted in durable storage,
-                and never displayed again.
+                Get this <span class="js-brand-name">QM</span> instance ready for real conversations. Secrets are
+                validated, encrypted in durable storage, and never displayed again.
               </p>
             </div>
             <div class="setup-grid">
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-model-badge">Not ready</span>
                 <h2>1. Model provider</h2>
-                <p id="onboarding-model-summary">Add the key <span class="js-brand-name">QM</span> will use for its base model.</p>
+                <p id="onboarding-model-summary">
+                  Add the key <span class="js-brand-name">QM</span> will use for its base model.
+                </p>
               </section>
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-slack-badge">Optional</span>
                 <h2>2. Slack app</h2>
                 <p id="onboarding-slack-summary">
-                  Create the <span class="js-brand-name">QM</span> app, install it, then add its bot and Socket Mode tokens.
+                  Create the <span class="js-brand-name">QM</span> app, install it, then add its bot and Socket Mode
+                  tokens.
                 </p>
                 <div class="foot">
                   <a
@@ -4299,8 +4302,9 @@
               <div class="head">
                 <h2>Custom providers</h2>
                 <p>
-                  Point <span class="js-brand-name">QM</span> at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
-                  LiteLLM fronting many models. Keys are validated, stored write-only, and the models join the picker.
+                  Point <span class="js-brand-name">QM</span> at any OpenAI- or Anthropic-compatible endpoint — a vendor
+                  like DeepSeek, or a gateway like LiteLLM fronting many models. Keys are validated, stored write-only,
+                  and the models join the picker.
                 </p>
               </div>
               <div class="body">
@@ -11366,7 +11370,10 @@
           if (s) parent.appendChild(document.createTextNode(s));
         };
         const linkProtocol = options.wikiLinks ? "(?:https?:\\/\\/|wiki:\\/)" : "https?:\\/\\/";
-        const re = new RegExp(`(\\*\\*([^*]+)\\*\\*|\`([^\`]+)\`|\\[([^\\]]+)\\]\\((${linkProtocol}[^)\\s]+)\\)|\\*([^*]+)\\*)`, "g");
+        const re = new RegExp(
+          `(\\*\\*([^*]+)\\*\\*|\`([^\`]+)\`|\\[([^\\]]+)\\]\\((${linkProtocol}[^)\\s]+)\\)|\\*([^*]+)\\*)`,
+          "g",
+        );
         let last = 0;
         for (const m of String(text || "").matchAll(re)) {
           pushText(text.slice(last, m.index));
@@ -12743,13 +12750,17 @@
           results.textContent = "";
           if (!response.ok) {
             searchSummary.textContent = "Search unavailable";
-            results.appendChild(wikiEmpty("Search could not connect", "Try again in a moment. Your query is still here."));
+            results.appendChild(
+              wikiEmpty("Search could not connect", "Try again in a moment. Your query is still here."),
+            );
             return;
           }
           const lines = (response.data && response.data.lines) || [];
           searchSummary.textContent = lines.length === 1 ? "1 result" : `${lines.length} results`;
           if (!lines.length) {
-            results.appendChild(wikiEmpty("No matching pages", "Try a person, project, decision, or a broader phrase."));
+            results.appendChild(
+              wikiEmpty("No matching pages", "Try a person, project, decision, or a broader phrase."),
+            );
             return;
           }
           lines.forEach((line) => {
@@ -12802,13 +12813,17 @@
           pageBody.appendChild(
             wikiEmpty(
               missing ? "Page not found" : "Wiki temporarily unavailable",
-              missing ? "This page may have been merged, renamed, or archived." : "The reader could not connect. Try again in a moment.",
+              missing
+                ? "This page may have been merged, renamed, or archived."
+                : "The reader could not connect. Try again in a moment.",
             ),
           );
-        }
-        else {
+        } else {
           const body = response.data.body;
-          if (!body) pageBody.appendChild(wikiEmpty("Nothing here yet", "The wiki will fill in as meaningful work is observed."));
+          if (!body)
+            pageBody.appendChild(
+              wikiEmpty("Nothing here yet", "The wiki will fill in as meaningful work is observed."),
+            );
           else {
             const rendered = st.slug
               ? renderWikiMarkdown(body)
