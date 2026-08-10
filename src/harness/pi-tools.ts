@@ -11,6 +11,7 @@ import { errMessage } from "../util/errors.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
 import { unscreenedNotice, UNSCREENED_PREFIX, type SecurityScreenVerdict } from "../security/security-posture.ts";
+import { SKILLS_DIR } from "../skills/materialization-paths.ts";
 import { CAPABILITY_TTL_MS } from "../auth/capability-token.ts";
 import { hasBrainQueryCredentials } from "../memory/brain-query-service.ts";
 
@@ -334,6 +335,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     ret: T,
     isError = false,
     sourceScopeId?: ScopeId | null,
+    prescreened = false,
   ): Promise<T> => {
     const t = ret.content
       .filter((c) => c.type === "text")
@@ -354,14 +356,20 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         summary.ok === true &&
         result === "[sent]" &&
         ret.content.every((c) => c.type === "text"));
-    if (ref.screenToolResult && !screenExempt) {
-      const screen = await ref
-        .screenToolResult(
-          String(summary.tool ?? ""),
-          result,
-          ret.content.some((c) => c.type !== "text"),
-        )
-        .catch(() => "unscreened" as const);
+    if (ref.screenToolResult && !screenExempt && !prescreened) {
+      const screenStart = Date.now();
+      let screen: boolean | "unscreened";
+      try {
+        screen = await ref
+          .screenToolResult(
+            String(summary.tool ?? ""),
+            result,
+            ret.content.some((c) => c.type !== "text"),
+          )
+          .catch(() => "unscreened" as const);
+      } finally {
+        ref.onGapWork?.({ phase: "security_screen", start: screenStart, end: Date.now() });
+      }
       if (screen === false) {
         result = "[tool output quarantined by Auto security posture]";
         (ret as { content: Array<{ type: string; text?: string }>; details?: unknown }).content = [
@@ -408,9 +416,15 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       .map((part) => part.text ?? "")
       .join("\n");
     if (!content.trim() || !ref.screenExternalContent) return recordResult(callId, summary, ret, false, sourceScopeId);
-    const verdict = await ref.screenExternalContent({ content, tool, source });
+    const screenStart = Date.now();
+    let verdict: Awaited<ReturnType<NonNullable<typeof ref.screenExternalContent>>>;
+    try {
+      verdict = await ref.screenExternalContent({ content, tool, source });
+    } finally {
+      ref.onGapWork?.({ phase: "security_screen", start: screenStart, end: Date.now() });
+    }
     if (verdict?.decision === "auto") {
-      if (!verdict.unscreened) return recordResult(callId, summary, ret, false, sourceScopeId);
+      if (!verdict.unscreened) return recordResult(callId, summary, ret, false, sourceScopeId, true);
       const bannered: T = {
         ...ret,
         content: [
@@ -418,7 +432,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
           ...ret.content.filter((part) => part.type !== "text"),
         ] as T["content"],
       };
-      return recordResult(callId, { ...summary, unscreened: true }, bannered, false, sourceScopeId);
+      return recordResult(callId, { ...summary, unscreened: true }, bannered, false, sourceScopeId, true);
     }
     const safeSummary = { ...summary };
     for (const key of ["stdout", "stderr", "content", "output", "result"]) delete safeSummary[key];
@@ -433,6 +447,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       blocked,
       true,
       sourceScopeId,
+      true,
     );
   };
 
@@ -699,6 +714,10 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       if (!tc) return text("[error] no active tool context");
       await recordCall(callId, { tool: "read", path: params.path });
       const { content, sourceScopeId } = await tc.read(params.path);
+      const normalized = params.path.replace(/^\.\/+/, "");
+      const platformMaterialized =
+        !normalized.includes("..") &&
+        (normalized.startsWith(`${SKILLS_DIR}/`) || normalized.startsWith(`global/${SKILLS_DIR}/`));
       return recordResult(
         callId,
         {
@@ -710,6 +729,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         text(content ?? `[no such file: ${params.path}]`),
         content === null,
         sourceScopeId,
+        platformMaterialized,
       );
     },
   });

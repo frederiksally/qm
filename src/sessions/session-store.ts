@@ -142,6 +142,7 @@ export type GapPhase =
   | "post_tool"
   | "tool_ledger"
   | "persist"
+  | "security_screen"
   | "stream_open";
 
 export interface GapWork {

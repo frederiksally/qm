@@ -581,11 +581,13 @@ type PiResponseHook = (
 ) => void | Promise<void>;
 type PiTransformContextHook = (messages: unknown, signal?: unknown) => unknown | Promise<unknown>;
 type PiPrepareNextTurnHook = (signal?: unknown) => unknown | Promise<unknown>;
+type PiPrepareNextTurnWithContextHook = (turn: unknown, signal?: unknown) => unknown | Promise<unknown>;
 interface PiAgentWithPayloadHook {
   onPayload?: PiPayloadHook;
   onResponse?: PiResponseHook;
   transformContext?: PiTransformContextHook;
   prepareNextTurn?: PiPrepareNextTurnHook;
+  prepareNextTurnWithContext?: PiPrepareNextTurnWithContextHook;
   afterToolCall?: (
     info: unknown,
     signal?: unknown,
@@ -1438,6 +1440,15 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             swallow("pi: prepareNextTurn stamp", e);
           }
           return priorPrepare ? await priorPrepare(signal) : undefined;
+        };
+        const priorPrepareWithContext = agent.prepareNextTurnWithContext;
+        agent.prepareNextTurnWithContext = async (turn, signal) => {
+          try {
+            ref.pendingPrepareNextTurn = Date.now();
+          } catch (e) {
+            swallow("pi: prepareNextTurn stamp", e);
+          }
+          return priorPrepareWithContext ? await priorPrepareWithContext(turn, signal) : undefined;
         };
       }
     }

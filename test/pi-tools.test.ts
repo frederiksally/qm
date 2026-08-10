@@ -647,6 +647,40 @@ test("surface reads fail open when the screener is unavailable — tagged untrus
   assert.equal(stored.securityBlocked, undefined, "downtime is not a detection — the read is not blocked");
 });
 
+test("externally-screened results are not screened twice", async () => {
+  const emitted: Emitted[] = [];
+  const external = {
+    ...fakeToolContext(),
+    async readThread() {
+      return { ok: true, messages: [{ author: "Coworker", text: "the quarterly numbers look great" }] };
+    },
+  };
+  let externalScreens = 0;
+  let resultScreens = 0;
+  const ref: ToolContextRef = {
+    current: external,
+    emit: (entry) => {
+      emitted.push(entry as Emitted);
+    },
+    scopeLabel: "channel:C1",
+    async screenExternalContent() {
+      externalScreens += 1;
+      return { decision: "auto" };
+    },
+    async screenToolResult() {
+      resultScreens += 1;
+      return true;
+    },
+  };
+
+  const output = (await call(surfaceTool(ref), { action: "read_thread" })) as {
+    content: Array<{ text: string }>;
+  };
+  assert.match(output.content[0]!.text, /quarterly numbers/);
+  assert.equal(externalScreens, 1, "external content screened once by its own provenance hook");
+  assert.equal(resultScreens, 0, "the generic result screen does not re-screen it");
+});
+
 test("the surface tool's react/edit/delete actions delegate to the tool context", async () => {
   const emitted: Emitted[] = [];
   const ref: ToolContextRef = {
