@@ -25,6 +25,7 @@ interface BrokerDelivery {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  allowHttp?: boolean;
   enabled: boolean;
   updatedBy?: string;
 }
@@ -134,6 +135,7 @@ export interface ServiceCredentialInput {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  allowHttp?: boolean;
   enabled?: boolean;
   updatedBy?: string;
 }
@@ -147,6 +149,7 @@ export interface PublicServiceCredential {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  allowHttp?: boolean;
   enabled: boolean;
   hasSecret: boolean;
   updatedBy?: string;
@@ -163,6 +166,7 @@ export interface DecryptedServiceCredential {
   injection?: CredentialInjection;
   allowedMethods?: string[];
   allowedPathPrefixes?: string[];
+  allowHttp?: boolean;
   enabled: boolean;
 }
 
@@ -515,6 +519,7 @@ export function createKeychain(deps: {
       ...(b.injection ? { injection: b.injection } : {}),
       ...(b.allowedMethods ? { allowedMethods: b.allowedMethods } : {}),
       ...(b.allowedPathPrefixes ? { allowedPathPrefixes: b.allowedPathPrefixes } : {}),
+      ...(b.allowHttp ? { allowHttp: true } : {}),
       enabled: b.enabled,
       hasSecret: !!rec.secretEnc,
       ...(b.updatedBy ? { updatedBy: b.updatedBy } : {}),
@@ -556,6 +561,7 @@ export function createKeychain(deps: {
         ...(input.injection ? { injection: input.injection } : {}),
         ...(input.allowedMethods ? { allowedMethods: input.allowedMethods.map((m) => m.toUpperCase()) } : {}),
         ...(input.allowedPathPrefixes ? { allowedPathPrefixes: input.allowedPathPrefixes } : {}),
+        ...(input.allowHttp === true ? { allowHttp: true } : {}),
         enabled: input.enabled !== false,
         ...(input.updatedBy ? { updatedBy: input.updatedBy } : {}),
       },
@@ -1130,6 +1136,7 @@ export function createKeychain(deps: {
         ...(b.injection ? { injection: b.injection } : {}),
         ...(b.allowedMethods ? { allowedMethods: b.allowedMethods } : {}),
         ...(b.allowedPathPrefixes ? { allowedPathPrefixes: b.allowedPathPrefixes } : {}),
+        ...(b.allowHttp ? { allowHttp: true } : {}),
         enabled: b.enabled,
       };
     },

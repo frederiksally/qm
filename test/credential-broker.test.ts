@@ -319,3 +319,27 @@ test("a missing slug or url is a 400 bad_request", async () => {
   );
   assert.equal((await brokerCredentialCall(base({ body: { credential: "x-firehose" } }))).status, 400);
 });
+
+test("http targets stay refused by default", async () => {
+  const cap = captureFetch();
+  const r = await brokerCredentialCall(
+    base({ body: { credential: "x-firehose", url: "http://api.x.com/2/tweets/search/recent" }, fetchImpl: cap.fetch }),
+  );
+  assert.equal(r.status, 403);
+  assert.match(JSON.stringify(r.json), /scheme_not_allowed/);
+  assert.equal(cap.calls.length, 0);
+});
+
+test("an opted-in allowHttp credential may call plain-http internal targets", async () => {
+  const cap = captureFetch();
+  const r = await brokerCredentialCall(
+    base({
+      body: { credential: "x-firehose", url: "http://api.x.com/2/tweets/search/recent" },
+      reader: reader({ slug: "x-firehose", allowHttp: true, allowedMethods: ["GET"], allowedPathPrefixes: ["/2/tweets/search/"] }),
+      fetchImpl: cap.fetch,
+    }),
+  );
+  assert.equal(r.status, 200);
+  assert.equal(cap.calls.length, 1);
+  assert.equal(cap.calls[0]!.headers["Authorization"], `Bearer ${SECRET}`);
+});
