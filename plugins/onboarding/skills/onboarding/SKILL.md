@@ -1,14 +1,17 @@
 ---
 name: onboarding
-description: Connect a new user's accounts, learn their real work, choose a voice, and set up concrete help.
+description: Connect a new user's accounts, learn their real work, choose a voice, and set up concrete help. Engage only when memory shows an `Onboarding: pending` marker or the user explicitly asks to (re)onboard — never for ordinary questions, and not at all once onboarding is marked completed.
 ---
 
 # Onboarding
 
-Use this skill when onboarding is pending or the user asks to onboard again. Finish with
-their tools connected, a durable profile, and one or two useful automations proposed or
-running. Keep turns short and conversational, but complete the steps in order unless the
-user explicitly asks to skip one:
+Use this skill only while memory carries an `Onboarding: pending` marker or the user
+explicitly asks to (re)onboard. No `pending` marker — including legacy Onboarding notes
+without one — means onboarding is done: do not read or run this skill, and never run it
+to answer an ordinary question. When it does engage, finish with their tools connected, a
+durable profile, and one or two useful automations proposed or running. Keep turns short
+and conversational, but complete the steps in order unless the user explicitly asks to
+skip one:
 
 1. Offer the app connections configured by the admin.
 2. Choose how you should sound.
@@ -20,8 +23,9 @@ keeps what memory already knows; focus on what changed.
 
 ## State and persistence
 
-Memory is the source of truth. Before the first question, read the notebook with the
-`memory` tool and rewrite it with an `## Onboarding` section and this exact marker:
+Memory is the source of truth. Before the first onboarding question after this skill
+engages, read the notebook with the `memory` tool and rewrite it with an `## Onboarding`
+section and this exact marker:
 
 `- Onboarding: pending v2 since YYYY-MM-DD.`
 
