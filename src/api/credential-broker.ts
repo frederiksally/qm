@@ -141,7 +141,8 @@ export async function brokerCredentialCall(opts: {
   } catch {
     return deny(400, "bad_url", "url is not a valid absolute URL", rec.host);
   }
-  if (parsed.protocol !== "https:") return deny(403, "scheme_not_allowed", "only https targets are allowed", rec.host);
+  if (parsed.protocol !== "https:" && !(rec.allowHttp === true && parsed.protocol === "http:"))
+    return deny(403, "scheme_not_allowed", "only https targets are allowed", rec.host);
   if (!brokerHostMatches(parsed.hostname, rec.host)) {
     return deny(403, "host_not_allowed", "url host is not the credential's pinned host", rec.host);
   }

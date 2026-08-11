@@ -680,6 +680,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         injection?: unknown;
         allowedMethods?: unknown;
         allowedPathPrefixes?: unknown;
+        allowHttp?: unknown;
         enabled?: unknown;
         grantees?: unknown;
         delete?: unknown;
@@ -749,6 +750,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
           injection: credential.injection ?? null,
           allowedMethods: credential.allowedMethods ?? null,
           allowedPathPrefixes: credential.allowedPathPrefixes ?? null,
+          allowHttp: credential.allowHttp === true,
           enabled: credential.enabled,
           hasSecret: credential.hasSecret,
           updatedBy: credential.updatedBy ?? null,
@@ -935,6 +937,10 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         ...(typeof b.secret === "string" && b.secret ? { secret: b.secret } : {}),
         ...(delivery === "broker" && effectiveInjection && (effectiveInjection.header || effectiveInjection.scheme)
           ? { injection: effectiveInjection }
+          : {}),
+        ...(delivery === "broker" &&
+        (b.allowHttp === true || (b.allowHttp === undefined && existing?.allowHttp === true))
+          ? { allowHttp: true }
           : {}),
         ...(delivery === "broker" ? brokerMethods : {}),
         ...(delivery === "broker" ? brokerPaths : {}),
