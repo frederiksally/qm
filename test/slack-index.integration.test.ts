@@ -500,25 +500,40 @@ test("a queued acknowledgment is updated into a refusal", async () => {
   }
 });
 
-test("a simple Agent View DM stays quiet until its reply starts", async () => {
+test("a delayed Agent View DM shows one busy step until real activity replaces it", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
     const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "work", ts: "100.3" });
     await waitFor(() => f.core.polled.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 2_100));
-    assert.equal(f.client.streamAppends.length, 0);
+    assert.equal(f.client.streamAppends.length, 1);
+    const placeholder = f.client.streamAppends[0]?.body.chunks?.[0];
+    assert.equal(placeholder?.id, "current_activity");
+    assert.equal(placeholder?.title, "Working on it");
+    assert.equal(placeholder?.status, "in_progress");
+    f.core.emitActivity([{ id: "tool-1", title: "Looking up relevant context", state: "in_progress" }]);
+    await waitFor(() => f.client.streamAppends.length === 2);
+    const replaced = f.client.streamAppends.at(-1)?.body.chunks?.[0];
+    assert.equal(replaced?.id, "current_activity");
+    assert.equal(replaced?.title, "Looking up relevant context");
+    assert.equal(replaced?.status, "in_progress");
     f.core.finishRun({ status: "ok", reply: "done" });
     await turn;
     assert.deepEqual(f.client.statuses, []);
     assert.deepEqual(f.client.reactionsAdded, []);
+    assert.equal(f.client.streamAppends.length, 3);
+    const terminal = f.client.streamAppends.at(-1)?.body.chunks?.[0];
+    assert.equal(terminal?.id, "current_activity");
+    assert.equal(terminal?.status, "complete");
     assert.equal(f.client.streamStops.length, 1);
+    assert.equal(f.client.streamStops[0]?.body.markdown_text, "done");
   } finally {
     await f.stop();
   }
 });
 
-test("a delayed steered DM never creates an activity surface", async () => {
+test("a delayed steered DM removes its busy surface", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
@@ -533,8 +548,8 @@ test("a delayed steered DM never creates an activity surface", async () => {
       ts: "100.32",
       thread_ts: "100.31",
     });
-    assert.equal(f.client.streamAppends.length, 0);
-    assert.equal(f.client.deletes.length, 0);
+    assert.equal(f.client.streamAppends.at(-1)?.body.chunks?.[0]?.title, "Working on it");
+    assert.equal(f.client.deletes.length, 1);
     f.core.finishRun({ status: "ok", reply: "done" });
     await first;
   } finally {
@@ -542,17 +557,18 @@ test("a delayed steered DM never creates an activity surface", async () => {
   }
 });
 
-test("a delayed silent DM never creates an activity surface", async () => {
+test("a delayed silent DM removes its busy surface", async () => {
   const f = await fixture();
   try {
     f.core.holdRun("R1");
     const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "quiet", ts: "100.33" });
     await waitFor(() => f.core.polled.length === 1);
     await new Promise((resolve) => setTimeout(resolve, 2_100));
+    assert.equal(f.client.streamAppends.length, 1);
+    assert.equal(f.client.streamAppends[0]?.body.chunks?.[0]?.title, "Working on it");
     f.core.finishRun({ status: "silent" });
     await turn;
-    assert.equal(f.client.streamAppends.length, 0);
-    assert.equal(f.client.deletes.length, 0);
+    assert.equal(f.client.deletes.length, 1);
     assert.equal(f.client.posts.length, 0);
   } finally {
     await f.stop();

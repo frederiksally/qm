@@ -64,7 +64,7 @@ import { createPerTurnStrategy } from "../memory/strategies/per-turn.ts";
 import { DEFAULT_MEMORY_POLICY, recallMemoryScopes, writableMemoryScope } from "../memory/policy.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { collectBlob, createMemoryBlobTransferStore } from "../persistence/blob-transfer.ts";
-import { createSkillMaterializer, skillsIndex, SKILLS_DIR } from "../skills/materialize.ts";
+import { createSkillMaterializer, materializedContentDigests, skillsIndex, SKILLS_DIR } from "../skills/materialize.ts";
 import {
   detectOnboardingStatus,
   onboardingSkillVisible,
@@ -124,7 +124,7 @@ import { NonRetryableTurnError, turnFailureMessage, type TurnFailurePayload } fr
 import { personKey, samePerson } from "../directory/person.ts";
 import { sleep } from "../util/async.ts";
 import { hashId } from "../util/crypto.ts";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { LRUCache } from "lru-cache";
 import type { SkillResolution } from "../skills/skill-store.ts";
 import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orchestrator/types.ts";
@@ -144,6 +144,7 @@ import {
   stripAckPrefix,
   stripTurnBoilerplate,
   visibleSkillScopes,
+  loadActiveBundles,
 } from "./orchestrator/turn-helpers.ts";
 import {
   currentTimeBlock,
@@ -2039,6 +2040,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const wantsOrgFastMode =
           typeof input.fastMode !== "boolean" && humanTurn && (await deps.config?.getInteractiveFastModeDurable());
         const effectiveFastMode = resolveTurnFastMode(input.fastMode, humanTurn, wantsOrgFastMode === true);
+        let materializedDigestsPromise: Promise<Set<string>> | undefined;
+        const materializedDigests = (): Promise<Set<string>> =>
+          (materializedDigestsPromise ??= (async () => {
+            const skills = await visibleSkillsForTurn();
+            const bundles = deps.skillBundles ? await loadActiveBundles(deps.skillBundles, skills) : [];
+            return materializedContentDigests(skills, bundles);
+          })());
+        const materializedContent = async (text: string): Promise<boolean> =>
+          (await materializedDigests()).has(createHash("sha256").update(text, "utf8").digest("hex"));
         const runHarnessTurn = (
           harnessInput: string,
           extras: {
@@ -2069,6 +2079,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(!partial && messageTs ? { triggerTs: messageTs } : {}),
             ...(!partial && entryTs ? { entryTs } : {}),
             ...(extras.environment ? { environment: extras.environment } : {}),
+            ...(scopeProfile.spec?.workdir ? { workspaceDir: scopeProfile.spec.workdir } : {}),
             ...(extras.priorTurns?.length ? { priorTurns: extras.priorTurns } : {}),
             ...(extras.overheard?.length ? { overheard: extras.overheard } : {}),
             ...(extras.attachments?.length ? { attachments: extras.attachments } : {}),
@@ -2096,6 +2107,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     result: string,
                     unscreenable: boolean,
                   ): Promise<boolean | "unscreened"> => {
+                    if (!unscreenable && (await materializedContent(result))) return true;
                     const toolLabel = tool.replace(/[^A-Za-z0-9_-]/g, "_");
                     const bounded = unscreenable
                       ? null
@@ -2151,11 +2163,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             (deps.securityScreener || deps.harness.models.screenSecurity)
               ? {
                   screenExternalContent: ({ content, tool }: { content: string; tool: string; source: string }) =>
-                    classifySecurityData(content, actor.id, scopeId, undefined, {
-                      hook: "tool_response",
-                      surface: tool,
-                      origin: input.origin.kind,
-                    }),
+                    materializedContent(content).then((skip) =>
+                      skip
+                        ? { decision: "auto" as const }
+                        : classifySecurityData(content, actor.id, scopeId, undefined, {
+                            hook: "tool_response",
+                            surface: tool,
+                            origin: input.origin.kind,
+                          }),
+                    ),
                 }
               : {}),
             ...(selectedTape

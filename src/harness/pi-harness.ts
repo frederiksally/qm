@@ -581,11 +581,13 @@ type PiResponseHook = (
 ) => void | Promise<void>;
 type PiTransformContextHook = (messages: unknown, signal?: unknown) => unknown | Promise<unknown>;
 type PiPrepareNextTurnHook = (signal?: unknown) => unknown | Promise<unknown>;
+type PiPrepareNextTurnWithContextHook = (turn: unknown, signal?: unknown) => unknown | Promise<unknown>;
 interface PiAgentWithPayloadHook {
   onPayload?: PiPayloadHook;
   onResponse?: PiResponseHook;
   transformContext?: PiTransformContextHook;
   prepareNextTurn?: PiPrepareNextTurnHook;
+  prepareNextTurnWithContext?: PiPrepareNextTurnWithContextHook;
   afterToolCall?: (
     info: unknown,
     signal?: unknown,
@@ -1261,6 +1263,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     tapeMode?: "shadow" | "serve",
     tapeFold?: unknown[],
     tape?: HarnessTurnInput["tape"],
+    workspaceDir?: string,
   ): Promise<{ entry: TurnSession; compileMs: number; tapeWriteFailed: boolean }> {
     const compileStart = Date.now();
     const cacheBoundary =
@@ -1329,7 +1332,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         }),
         noTools: "builtin",
         sessionManager: SessionManager.inMemory(undefined, { id: sessionId }),
-        cwd,
+        cwd: workspaceDir ?? cwd,
         agentDir,
       }));
     } catch (err) {
@@ -1438,6 +1441,15 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           }
           return priorPrepare ? await priorPrepare(signal) : undefined;
         };
+        const priorPrepareWithContext = agent.prepareNextTurnWithContext;
+        agent.prepareNextTurnWithContext = async (turn, signal) => {
+          try {
+            ref.pendingPrepareNextTurn = Date.now();
+          } catch (e) {
+            swallow("pi: prepareNextTurn stamp", e);
+          }
+          return priorPrepareWithContext ? await priorPrepareWithContext(turn, signal) : undefined;
+        };
       }
     }
 
@@ -1479,6 +1491,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeMode,
           turn.tapeFold,
           turn.tape,
+          turn.workspaceDir,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;

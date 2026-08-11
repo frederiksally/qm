@@ -1,10 +1,11 @@
-import type {
-  AwsMicrovmApi,
-  MicrovmDescription,
-  MicrovmImageSummary,
-  MicrovmLifecycleState,
+import {
+  AwsApiError,
+  type AwsMicrovmApi,
+  type MicrovmDescription,
+  type MicrovmImageSummary,
+  type MicrovmLifecycleState,
 } from "../../src/sandbox/aws-microvm-api.ts";
-import { AwsApiError } from "../../src/sandbox/aws-microvm-api.ts";
+import { parseTar } from "../../src/sandbox/tar.ts";
 
 interface FakeBody {
   id: string;
@@ -23,6 +24,7 @@ export interface FakeMicrovm {
   bodies: Map<string, FakeBody>;
   s3store: Map<string, Uint8Array>;
   commands: string[];
+  writes: string[];
   runCount: number;
   killBody(id: string): void;
 }
@@ -92,9 +94,20 @@ export function installFakeMicrovm(): FakeMicrovm {
     },
   };
 
-  function exec(body: FakeBody, cmd: string): { stdout: string; stderr: string; code: number; timedOut: boolean } {
+  async function exec(body: FakeBody, cmd: string): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
     self.commands.push(cmd);
     const ok = { stdout: "", stderr: "", code: 0, timedOut: false };
+    if (cmd.includes("tar -xf '.extract.tar'")) {
+      const blob = body.fs.get("/root/workspace/.extract.tar");
+      if (!blob) return { ...ok, code: 2, stderr: "tar: .extract.tar: Cannot open: No such file or directory" };
+      try {
+        for (const entry of await parseTar(blob)) body.fs.set(`/root/workspace/${entry.path}`, entry.data);
+      } catch (e) {
+        return { ...ok, code: 2, stderr: `tar: ${String(e)}` };
+      }
+      body.fs.delete("/root/workspace/.extract.tar");
+      return ok;
+    }
     if (cmd.includes("tar --null -T - -cf '/tmp/agent-home.tar'")) {
       const dump: Record<string, string> = {};
       for (const [p, v] of body.fs)
@@ -138,8 +151,9 @@ export function installFakeMicrovm(): FakeMicrovm {
     if (!body || body.state !== "RUNNING") return json(502, { error: "not running" });
     if (u.pathname === "/health") return json(200, { ok: true, pid: 1 });
     const payload = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
-    if (u.pathname === "/exec") return json(200, exec(body, String(payload.cmd ?? "")));
+    if (u.pathname === "/exec") return json(200, await exec(body, String(payload.cmd ?? "")));
     if (u.pathname === "/write") {
+      self.writes.push(String(payload.path));
       body.fs.set(String(payload.path), Buffer.from(String(payload.b64), "base64"));
       return json(200, { ok: true });
     }
@@ -177,6 +191,7 @@ export function installFakeMicrovm(): FakeMicrovm {
   self.bodies = bodies;
   self.s3store = s3store;
   self.commands = [];
+  self.writes = [];
   self.killBody = (id: string) => {
     const b = bodies.get(id);
     if (b) b.state = "TERMINATED";

@@ -85,15 +85,37 @@ function renderedBody(resolution: SkillResolution): string {
     : body;
 }
 
+export function materializedContentDigests(resolved: SkillResolution[], bundles: SkillBundle[]): Set<string> {
+  const digests = new Set<string>();
+  const add = (content: string): void => {
+    digests.add(createHash("sha256").update(content, "utf8").digest("hex"));
+  };
+  for (const r of resolved) {
+    if (!r.skill) continue;
+    add(renderedBody(r));
+    for (const f of r.skill.manifest.files ?? []) add(f.content);
+  }
+  for (const b of bundles) for (const f of b.files) add(f.content);
+  return digests;
+}
+
 interface LayEntry {
   path: string;
   content: string;
 }
 
+interface IndexTreeEntry {
+  hash: string;
+  skillPaths: string[];
+  bundlePaths: string[];
+}
+
 interface IndexMarkerState {
-  version: 2;
+  version: 2 | 3;
   hash: string;
   names: string[];
+  skills?: Record<string, IndexTreeEntry>;
+  treesComplete?: true;
   legacyExternalPathsPreserved?: true;
 }
 
@@ -108,7 +130,7 @@ function parsedMarker(raw: string | null): Record<string, unknown> | null {
   if (!raw?.startsWith("{")) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return parsed.version === 2 && typeof parsed.hash === "string" ? parsed : null;
+    return (parsed.version === 2 || parsed.version === 3) && typeof parsed.hash === "string" ? parsed : null;
   } catch {
     return null;
   }
@@ -137,15 +159,89 @@ function isSafeMaterializedPath(path: unknown): path is string {
 function treeMarkerState(raw: string | null, dir: string): TreeMarkerState | null {
   const parsed = parsedMarker(raw);
   if (!parsed || !Array.isArray(parsed.skillPaths) || !Array.isArray(parsed.bundlePaths)) return null;
+  if (!validTreePaths(dir, parsed.skillPaths, parsed.bundlePaths)) return null;
+  return parsed as unknown as TreeMarkerState;
+}
+
+function validTreePaths(dir: string, skillPaths: unknown[], bundlePaths: unknown[]): boolean {
   if (
-    !parsed.skillPaths.every(
+    !skillPaths.every(
       (path) => isSafeMaterializedPath(path) && path.startsWith(`${dir}/`) && !isSkillMaterializationControlPath(path),
     )
   )
-    return null;
-  if (!parsed.bundlePaths.every((path) => isSafeMaterializedPath(path) && !isSkillMaterializationControlPath(path)))
-    return null;
-  return parsed as unknown as TreeMarkerState;
+    return false;
+  return bundlePaths.every((path) => isSafeMaterializedPath(path) && !isSkillMaterializationControlPath(path));
+}
+
+function validatedIndexTrees(index: IndexMarkerState): Record<string, IndexTreeEntry> {
+  const out: Record<string, IndexTreeEntry> = {};
+  if (index.version !== 3 || !index.skills || typeof index.skills !== "object") return out;
+  for (const [name, entry] of Object.entries(index.skills)) {
+    if (!isSafeSkillName(name) || !entry || typeof entry !== "object") continue;
+    const { hash, skillPaths, bundlePaths } = entry as Partial<IndexTreeEntry>;
+    if (typeof hash !== "string" || !Array.isArray(skillPaths) || !Array.isArray(bundlePaths)) continue;
+    const dir = `${SKILLS_DIR}/${name}`;
+    if (!validTreePaths(dir, skillPaths, bundlePaths)) continue;
+    out[name] = { hash, skillPaths: skillPaths as string[], bundlePaths: bundlePaths as string[] };
+  }
+  return out;
+}
+
+async function treeEntriesFor(
+  sandbox: Sandbox,
+  handle: SandboxHandle,
+  index: IndexMarkerState,
+  names: Iterable<string>,
+): Promise<Record<string, IndexTreeEntry>> {
+  const known = validatedIndexTrees(index);
+  const complete = index.version === 3 && index.treesComplete === true;
+  const out: Record<string, IndexTreeEntry> = {};
+  for (const name of names) {
+    const existing = known[name];
+    if (existing) {
+      out[name] = existing;
+      continue;
+    }
+    if (complete) continue;
+    const dir = `${SKILLS_DIR}/${name}`;
+    const raw = await readMarker(sandbox, handle, `${dir}/${TREE_MARKER}`, `skills: tree probe ${name}`);
+    const state = treeMarkerState(raw, dir);
+    if (state) out[name] = { hash: state.hash, skillPaths: state.skillPaths, bundlePaths: state.bundlePaths };
+  }
+  return out;
+}
+
+async function syncIndexTreeEntry(
+  sandbox: Sandbox,
+  handle: SandboxHandle,
+  index: IndexMarkerState | null,
+  name: string,
+  entry: IndexTreeEntry,
+): Promise<void> {
+  if (!index) return;
+  const trees = validatedIndexTrees(index);
+  const existing = trees[name];
+  if (
+    index.version === 3 &&
+    existing &&
+    existing.hash === entry.hash &&
+    samePaths(existing.skillPaths, entry.skillPaths) &&
+    samePaths(existing.bundlePaths, entry.bundlePaths)
+  )
+    return;
+  trees[name] = entry;
+  await sandbox.writeFile(
+    handle,
+    INDEX_MARKER,
+    JSON.stringify({
+      version: 3,
+      hash: index.hash,
+      names: index.names,
+      skills: trees,
+      ...(index.treesComplete === true ? { treesComplete: true as const } : {}),
+      ...(index.legacyExternalPathsPreserved === true ? { legacyExternalPathsPreserved: true as const } : {}),
+    } satisfies IndexMarkerState),
+  );
 }
 
 function samePaths(a: string[], b: string[]): boolean {
@@ -216,29 +312,23 @@ async function materializeSkillIndexUnlocked(
   const names = resolved.flatMap((r) => (r.skill ? [safeSkillDirName(r.skill.manifest.name)] : [])).sort();
   const raw = await readMarker(sandbox, handle, INDEX_MARKER, "skills: index probe");
   const prev = indexMarkerState(raw);
-  if (prev?.hash === want && samePaths(prev.names, names)) return;
+  if (prev?.version === 3 && prev.hash === want && samePaths(prev.names, names)) return;
   const legacyExternalPathsPreserved = prev?.legacyExternalPathsPreserved === true || Boolean(raw && !prev);
 
+  let trees: Record<string, IndexTreeEntry> = {};
   if (raw && !prev) {
     await sandbox.removeDir(handle, SKILLS_DIR);
   } else if (prev) {
+    trees = await treeEntriesFor(sandbox, handle, prev, new Set([...names, ...prev.names]));
     const activeBundlePaths = new Set<string>();
     for (const name of names) {
-      const currentRaw = await readMarker(
-        sandbox,
-        handle,
-        `${SKILLS_DIR}/${name}/${TREE_MARKER}`,
-        `skills: tree probe ${name}`,
-      );
-      const current = treeMarkerState(currentRaw, `${SKILLS_DIR}/${name}`);
-      for (const path of current?.bundlePaths ?? []) activeBundlePaths.add(path);
+      for (const path of trees[name]?.bundlePaths ?? []) activeBundlePaths.add(path);
     }
     const activeNames = new Set(names);
     for (const name of prev.names) {
       if (activeNames.has(name)) continue;
       const dir = `${SKILLS_DIR}/${name}`;
-      const staleRaw = await readMarker(sandbox, handle, `${dir}/${TREE_MARKER}`, `skills: tree probe ${name}`);
-      const stale = treeMarkerState(staleRaw, dir);
+      const stale = trees[name];
       const paths = new Set([`${dir}/SKILL.md`, ...(stale?.skillPaths ?? []), ...(stale?.bundlePaths ?? [])]);
       for (const path of paths) {
         if (!activeBundlePaths.has(path)) await sandbox.removeDir(handle, path);
@@ -247,6 +337,11 @@ async function materializeSkillIndexUnlocked(
       if (protectsDirectory) await sandbox.removeDir(handle, `${dir}/${TREE_MARKER}`);
       else await sandbox.removeDir(handle, dir);
     }
+  }
+
+  const skills: Record<string, IndexTreeEntry> = {};
+  for (const name of names) {
+    if (trees[name]) skills[name] = trees[name];
   }
 
   const entries: LayEntry[] = [];
@@ -260,9 +355,11 @@ async function materializeSkillIndexUnlocked(
   entries.push({
     path: INDEX_MARKER,
     content: JSON.stringify({
-      version: 2,
+      version: 3,
       hash: want,
       names,
+      skills,
+      treesComplete: true,
       ...(legacyExternalPathsPreserved ? { legacyExternalPathsPreserved: true as const } : {}),
     } satisfies IndexMarkerState),
   });
@@ -286,7 +383,16 @@ async function materializeSkillTreeUnlocked(
   const bundlePaths = guardedBundlePaths(bundles);
   const raw = await readMarker(sandbox, handle, marker, "skills: tree probe");
   const prev = treeMarkerState(raw, dir);
-  if (prev?.hash === want && samePaths(prev.skillPaths, skillPaths) && samePaths(prev.bundlePaths, bundlePaths)) return;
+  const indexRaw = await readMarker(sandbox, handle, INDEX_MARKER, "skills: index probe");
+  const index = indexMarkerState(indexRaw);
+  if (prev?.hash === want && samePaths(prev.skillPaths, skillPaths) && samePaths(prev.bundlePaths, bundlePaths)) {
+    await syncIndexTreeEntry(sandbox, handle, index, safeSkillDirName(m.name), {
+      hash: want,
+      skillPaths,
+      bundlePaths,
+    });
+    return;
+  }
 
   if (raw === want) {
     await sandbox.writeFile(
@@ -294,22 +400,22 @@ async function materializeSkillTreeUnlocked(
       marker,
       JSON.stringify({ version: 2, hash: want, skillPaths, bundlePaths } satisfies TreeMarkerState),
     );
+    await syncIndexTreeEntry(sandbox, handle, index, safeSkillDirName(m.name), {
+      hash: want,
+      skillPaths,
+      bundlePaths,
+    });
     return;
   }
 
   const otherBundlePaths = new Set<string>();
-  const indexRaw = await readMarker(sandbox, handle, INDEX_MARKER, "skills: index probe");
-  const index = indexMarkerState(indexRaw);
-  for (const name of index?.names ?? []) {
-    if (name === safeSkillDirName(m.name)) continue;
-    const otherRaw = await readMarker(
-      sandbox,
-      handle,
-      `${SKILLS_DIR}/${name}/${TREE_MARKER}`,
-      `skills: tree probe ${name}`,
-    );
-    const other = treeMarkerState(otherRaw, `${SKILLS_DIR}/${name}`);
-    for (const path of other?.bundlePaths ?? []) otherBundlePaths.add(path);
+  let trees: Record<string, IndexTreeEntry> = {};
+  if (index) {
+    const otherNames = index.names.filter((name) => name !== safeSkillDirName(m.name));
+    trees = await treeEntriesFor(sandbox, handle, index, otherNames);
+    for (const name of otherNames) {
+      for (const path of trees[name]?.bundlePaths ?? []) otherBundlePaths.add(path);
+    }
   }
 
   if (prev) {
@@ -355,6 +461,20 @@ async function materializeSkillTreeUnlocked(
     path: marker,
     content: JSON.stringify({ version: 2, hash: want, skillPaths, bundlePaths } satisfies TreeMarkerState),
   });
+  if (index) {
+    trees[safeSkillDirName(m.name)] = { hash: want, skillPaths, bundlePaths };
+    entries.push({
+      path: INDEX_MARKER,
+      content: JSON.stringify({
+        version: 3,
+        hash: index.hash,
+        names: index.names,
+        skills: trees,
+        treesComplete: true,
+        ...(index.legacyExternalPathsPreserved === true ? { legacyExternalPathsPreserved: true as const } : {}),
+      } satisfies IndexMarkerState),
+    });
+  }
   await layFiles(sandbox, handle, entries);
 }
 

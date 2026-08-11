@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import type { SkillFile, SkillResolution } from "../src/skills/skill-store.ts";
 import {
   createSkillMaterializer,
   materializeSkillIndex,
   materializeSkillTree,
+  materializedContentDigests,
   safeSkillDirName,
 } from "../src/skills/materialize.ts";
 import { computeBundleHash, type SkillBundle } from "../src/skills/skill-bundle-store.ts";
@@ -129,7 +131,8 @@ test("materializeSkillIndex migrates a legacy hash marker without retaining old 
   assert.equal(files.has("skills/removed/asset.txt"), false);
   assert.equal(files.get("skills/alpha/SKILL.md"), "A");
   const migrated = JSON.parse(files.get("skills/.index")!);
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, 3);
+  assert.equal(migrated.treesComplete, true);
   assert.equal(migrated.legacyExternalPathsPreserved, true);
 });
 
@@ -482,4 +485,123 @@ test("materializeSkillTree uses extractFiles (one batch) when the backend offers
   assert.equal(batches, 1, "the whole tree is laid in a single round-trip");
   assert.equal(files.get("skills/gamma/a.py"), "A");
   assert.equal(files.get("skills/gamma/b.py"), "B");
+});
+
+test("materializeSkillIndex performs O(1) sandbox reads regardless of skill count", async () => {
+  const { sandbox, calls } = fakeSandbox();
+  const many = Array.from({ length: 20 }, (_, i) => res(`s${i}`, "B", [{ path: "a.txt", content: "x" }]));
+  await materializeSkillIndex(sandbox, handle, many);
+  assert.equal(calls.reads, 1, "a cold index materialization reads only the index marker");
+
+  await materializeSkillIndex(sandbox, handle, many.slice(1));
+  assert.equal(calls.reads, 2, "a reconcile that removes a skill still reads only the index marker");
+
+  await materializeSkillIndex(sandbox, handle, many.slice(1));
+  assert.equal(calls.reads, 3, "the fresh check is a single index read");
+});
+
+test("materializeSkillTree performs O(1) sandbox reads regardless of sibling count", async () => {
+  const { sandbox, calls } = fakeSandbox();
+  const alpha = res("alpha", "A", [{ path: "a.txt", content: "1" }]);
+  const siblings = Array.from({ length: 20 }, (_, i) => res(`o${i}`, "O", [{ path: "b.txt", content: "y" }]));
+  await materializeSkillIndex(sandbox, handle, [alpha, ...siblings]);
+  for (const s of siblings) await materializeSkillTree(sandbox, handle, s);
+
+  const before = calls.reads;
+  await materializeSkillTree(sandbox, handle, alpha);
+  assert.equal(calls.reads - before, 2, "one tree-marker read + one index read, no per-sibling probes");
+});
+
+test("v2 index state migrates by probing per-name tree markers once, then never again", async () => {
+  const { sandbox, files, calls } = fakeSandbox();
+  const alpha = res("alpha", "A");
+  const beta = res("beta", "B");
+  const shared = bundle("shared", [
+    { path: "lib/shared.mjs", content: "s" },
+    { path: "lib/beta.mjs", content: "b" },
+  ]);
+  await materializeSkillIndex(sandbox, handle, [alpha, beta]);
+  await materializeSkillTree(sandbox, handle, alpha, [bundle("shared", [{ path: "lib/shared.mjs", content: "s" }])]);
+  await materializeSkillTree(sandbox, handle, beta, [shared]);
+
+  const written = JSON.parse(files.get("skills/.index")!);
+  files.set("skills/.index", JSON.stringify({ version: 2, hash: written.hash, names: written.names }));
+
+  const before = calls.reads;
+  await materializeSkillIndex(sandbox, handle, [alpha]);
+  assert.equal(
+    calls.reads - before,
+    3,
+    "the v2 migration reads the index once plus one tree-marker probe per known name",
+  );
+
+  assert.equal(
+    files.get("skills/.packs/shared/lib/shared.mjs"),
+    "s",
+    "a bundle path still owned by a surviving skill survives the migration",
+  );
+  assert.equal(files.has("skills/.packs/shared/lib/beta.mjs"), false, "an unowned bundle path is removed");
+  assert.equal(files.has("skills/beta/SKILL.md"), false, "the removed skill's tree is cleaned");
+
+  const migrated = JSON.parse(files.get("skills/.index")!);
+  assert.equal(migrated.version, 3);
+  assert.equal(migrated.treesComplete, true);
+  assert.deepEqual(migrated.names, ["alpha"]);
+  assert.deepEqual(migrated.skills.alpha.bundlePaths, ["skills/.packs/shared/lib/shared.mjs"]);
+  assert.equal(migrated.skills.beta, undefined, "the removed skill leaves no folded tree state");
+
+  const steady = calls.reads;
+  await materializeSkillIndex(sandbox, handle, [res("alpha", "A2")]);
+  assert.equal(calls.reads - steady, 1, "post-migration reconciles are probe-free");
+  assert.equal(
+    files.get("skills/.packs/shared/lib/shared.mjs"),
+    "s",
+    "the folded tree state protects the shared bundle across later reconciles",
+  );
+
+  const treeReads = calls.reads;
+  await materializeSkillTree(sandbox, handle, res("alpha", "A2"), [
+    bundle("shared", [{ path: "lib/shared.mjs", content: "s" }]),
+  ]);
+  assert.equal(calls.reads - treeReads, 2, "a post-migration tree rewrite does only the constant reads");
+  assert.equal(
+    files.get("skills/.packs/shared/lib/shared.mjs"),
+    "s",
+    "a bundle path owned by the folded v3 state survives a tree rewrite",
+  );
+});
+
+test("current() re-resolution keeps the folded index tree entries in step with the latest projection", async () => {
+  const { sandbox, files } = fakeSandbox();
+  const fleetLock = createMemoryAdvisoryLock();
+  const materializer = createSkillMaterializer(fleetLock);
+  const stale = res("gamma", "G2", [{ path: "s.py", content: "v2" }]);
+  const current = res("gamma", "G3", [{ path: "s.py", content: "v3" }]);
+
+  await materializer.materializeIndex(sandbox, handle, [stale], async () => [current]);
+  await materializer.materializeTree(sandbox, handle, stale, [], async () => ({ resolution: current, bundles: [] }));
+
+  assert.equal(files.get("skills/gamma/SKILL.md"), "G3");
+  assert.equal(files.get("skills/gamma/s.py"), "v3");
+  const index = JSON.parse(files.get("skills/.index")!);
+  const tree = JSON.parse(files.get("skills/gamma/.tree")!);
+  assert.equal(index.version, 3);
+  assert.equal(index.skills.gamma.hash, tree.hash, "the folded index entry mirrors the materialized tree state");
+  assert.deepEqual(index.skills.gamma.skillPaths, ["skills/gamma/SKILL.md", "skills/gamma/s.py"]);
+});
+
+test("materializedContentDigests covers skill bodies, files, and bundle files — and nothing else", () => {
+  const skills = [
+    res("alpha", "alpha body", [{ path: "tool.py", content: "print(1)" }]),
+    res("packed", "packed body", [], "pack-1"),
+  ];
+  const bundles = [bundle("pack-1", [{ path: "shared.md", content: "shared content" }])];
+  const digests = materializedContentDigests(skills, bundles);
+  const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
+  assert.ok(digests.has(sha("alpha body")));
+  assert.ok(digests.has(sha("print(1)")));
+  assert.ok(digests.has(sha("packed body\n\n## Pack files\nResolve repository-relative shared-file paths against `skills/.packs/pack-1/`; pack files never overwrite the workspace root.")));
+  assert.ok(digests.has(sha("shared content")));
+  assert.ok(!digests.has(sha("attacker planted this")));
+  assert.ok(!digests.has(sha("alpha body ")), "byte-exact match required, not a prefix/trimmed match");
 });

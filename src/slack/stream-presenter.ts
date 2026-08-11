@@ -55,7 +55,7 @@ const taskTitle = (title: string): string => Array.from(title).slice(0, 256).joi
 
 export function createStreamPresenter(deps: {
   create(): Streamer;
-  checkpoint(ts: string): Promise<void>;
+  checkpoint(ts: string): Promise<boolean>;
   finalize(ts: string, text: string, blocks?: Array<Record<string, unknown>>): Promise<void>;
   remove(ts: string): Promise<void>;
   onDelivered?(ts: string, text: string): Promise<void> | void;
@@ -73,6 +73,7 @@ export function createStreamPresenter(deps: {
   let liveText = "";
   let currentActivity: SlackActivityStep | undefined;
   let toolWork = false;
+  let closed = false;
   const accepted = (text: string): string => {
     liveText += text;
     return text;
@@ -113,8 +114,8 @@ export function createStreamPresenter(deps: {
   const ensure = (): Streamer => (streamer ??= deps.create());
   const checkpoint = async (): Promise<void> => {
     if (checkpointed || !streamer?.ts) return;
-    await deps.checkpoint(streamer.ts);
-    checkpointed = true;
+    const persisted = await deps.checkpoint(streamer.ts);
+    if (persisted) checkpointed = true;
   };
   const ensureCheckpoint = async (): Promise<boolean> => {
     if (checkpointed) return true;
@@ -151,15 +152,16 @@ export function createStreamPresenter(deps: {
   };
   return {
     pushDelta(delta) {
-      if (toolWork) return;
+      if (closed || toolWork) return;
       append(boundLiveText(projector.push(delta), PROVISIONAL_TEXT_LIMIT, true));
     },
     beginToolWork() {
-      if (toolWork) return;
+      if (closed || toolWork) return;
       toolWork = true;
       append(boundLiveText(projector.finish(), PROVISIONAL_TEXT_LIMIT, true));
     },
     pushActivity(steps) {
+      if (closed) return;
       const step =
         [...steps]
           .reverse()
@@ -180,6 +182,7 @@ export function createStreamPresenter(deps: {
       );
     },
     async finish(text, blocks, terminalStreamText = text, recoveryBlocks) {
+      closed = true;
       if (
         currentActivity &&
         (currentActivity.state === "pending" ||
@@ -247,6 +250,7 @@ export function createStreamPresenter(deps: {
       }
     },
     async discard() {
+      closed = true;
       await chain;
       if (!streamer?.ts) return;
       await streamer.stop().catch((error) => deps.onError?.(error));

@@ -334,6 +334,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     ret: T,
     isError = false,
     sourceScopeId?: ScopeId | null,
+    prescreened = false,
   ): Promise<T> => {
     const t = ret.content
       .filter((c) => c.type === "text")
@@ -354,14 +355,20 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         summary.ok === true &&
         result === "[sent]" &&
         ret.content.every((c) => c.type === "text"));
-    if (ref.screenToolResult && !screenExempt) {
-      const screen = await ref
-        .screenToolResult(
-          String(summary.tool ?? ""),
-          result,
-          ret.content.some((c) => c.type !== "text"),
-        )
-        .catch(() => "unscreened" as const);
+    if (ref.screenToolResult && !screenExempt && !prescreened) {
+      const screenStart = Date.now();
+      let screen: boolean | "unscreened";
+      try {
+        screen = await ref
+          .screenToolResult(
+            String(summary.tool ?? ""),
+            result,
+            ret.content.some((c) => c.type !== "text"),
+          )
+          .catch(() => "unscreened" as const);
+      } finally {
+        ref.onGapWork?.({ phase: "security_screen", start: screenStart, end: Date.now() });
+      }
       if (screen === false) {
         result = "[tool output quarantined by Auto security posture]";
         (ret as { content: Array<{ type: string; text?: string }>; details?: unknown }).content = [
@@ -408,9 +415,15 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       .map((part) => part.text ?? "")
       .join("\n");
     if (!content.trim() || !ref.screenExternalContent) return recordResult(callId, summary, ret, false, sourceScopeId);
-    const verdict = await ref.screenExternalContent({ content, tool, source });
+    const screenStart = Date.now();
+    let verdict: Awaited<ReturnType<NonNullable<typeof ref.screenExternalContent>>>;
+    try {
+      verdict = await ref.screenExternalContent({ content, tool, source });
+    } finally {
+      ref.onGapWork?.({ phase: "security_screen", start: screenStart, end: Date.now() });
+    }
     if (verdict?.decision === "auto") {
-      if (!verdict.unscreened) return recordResult(callId, summary, ret, false, sourceScopeId);
+      if (!verdict.unscreened) return recordResult(callId, summary, ret, false, sourceScopeId, true);
       const bannered: T = {
         ...ret,
         content: [
@@ -418,7 +431,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
           ...ret.content.filter((part) => part.type !== "text"),
         ] as T["content"],
       };
-      return recordResult(callId, { ...summary, unscreened: true }, bannered, false, sourceScopeId);
+      return recordResult(callId, { ...summary, unscreened: true }, bannered, false, sourceScopeId, true);
     }
     const safeSummary = { ...summary };
     for (const key of ["stdout", "stderr", "content", "output", "result"]) delete safeSummary[key];
@@ -433,6 +446,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       blocked,
       true,
       sourceScopeId,
+      true,
     );
   };
 

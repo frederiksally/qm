@@ -151,3 +151,90 @@ test("concurrent provisions for one scope launch a single body", async () => {
   assert.equal(a.id, b.id);
   assert.equal(fake.runCount, 1);
 });
+
+test("extractFiles lays many files with one tar upload and one remote extract", async () => {
+  const fake = installFakeMicrovm();
+  const sb = makeSandbox(fake);
+  const h = await sb.provision(rw(scopeId("personal", "U-extract")));
+  await sb.extractFiles!(h, [
+    { path: ".skills/a/SKILL.md", data: Buffer.from("aaa") },
+    { path: ".skills/b/scripts/run.sh", data: Buffer.from("#!/bin/sh\nexit 0\n") },
+    { path: ".skills/.index.json", data: Buffer.from('{"version":2}') },
+  ]);
+
+  const fs = fake.bodies.get(h.id)!.fs;
+  assert.equal(Buffer.from(fs.get("/root/workspace/.skills/a/SKILL.md")!).toString(), "aaa");
+  assert.equal(Buffer.from(fs.get("/root/workspace/.skills/b/scripts/run.sh")!).toString(), "#!/bin/sh\nexit 0\n");
+  assert.equal(Buffer.from(fs.get("/root/workspace/.skills/.index.json")!).toString(), '{"version":2}');
+  assert.equal(fs.has("/root/workspace/.extract.tar"), false, "temp archive cleaned up after extract");
+
+  assert.deepEqual(
+    fake.writes.filter((path) => path.endsWith("/.extract.tar")),
+    ["/root/workspace/.extract.tar"],
+    "one tar upload, not one upload per file",
+  );
+  const extracts = fake.commands.filter((command) => command.includes("tar -xf '.extract.tar'"));
+  assert.equal(extracts.length, 1, "one remote extract command");
+  assert.match(extracts[0]!, /cd '\/root\/workspace' && tar -xf '\.extract\.tar'; rc=\$\?; rm -f '\.extract\.tar'; exit \$rc/);
+});
+
+test("extractFiles with no entries touches the body zero times", async () => {
+  const fake = installFakeMicrovm();
+  const sb = makeSandbox(fake);
+  const h = await sb.provision(rw(scopeId("personal", "U-extract-empty")));
+  await sb.extractFiles!(h, []);
+  assert.deepEqual(fake.writes, []);
+  assert.equal(fake.commands.filter((command) => command.includes(".extract.tar")).length, 0);
+});
+
+test("extractFiles fails loudly when the tar upload fails", async () => {
+  const fake = installFakeMicrovm();
+  const inner = fake.fetchImpl;
+  const failing = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(url)).pathname === "/write" && String(init?.body).includes(".extract.tar"))
+      return new Response(JSON.stringify({ error: "disk full" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    return inner(url, init);
+  }) as typeof fetch;
+  const sb = makeSandbox(fake, { fetchImpl: failing });
+  const h = await sb.provision(rw(scopeId("personal", "U-extract-upload-fail")));
+
+  await assert.rejects(
+    sb.extractFiles!(h, [{ path: "a.txt", data: Buffer.from("x") }]),
+    /microVM write \/root\/workspace\/\.extract\.tar failed \(500\)/,
+  );
+  assert.equal(
+    fake.commands.filter((command) => command.includes("tar -xf '.extract.tar'")).length,
+    0,
+    "no extract ran after the failed upload",
+  );
+  assert.equal(fake.bodies.get(h.id)!.fs.has("/root/workspace/a.txt"), false, "no partial files landed");
+});
+
+test("extractFiles fails loudly when the remote extract fails, still cleaning up", async () => {
+  const fake = installFakeMicrovm();
+  const inner = fake.fetchImpl;
+  let attempted = "";
+  const failing = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(url));
+    const body = String(init?.body ?? "");
+    if (u.pathname === "/exec" && body.includes("tar -xf '.extract.tar'")) {
+      attempted = (JSON.parse(body) as { cmd: string }).cmd;
+      return new Response(JSON.stringify({ stdout: "", stderr: "tar: corrupted archive", code: 2, timedOut: false }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return inner(url, init);
+  }) as typeof fetch;
+  const sb = makeSandbox(fake, { fetchImpl: failing });
+  const h = await sb.provision(rw(scopeId("personal", "U-extract-fail")));
+
+  await assert.rejects(
+    sb.extractFiles!(h, [{ path: "a.txt", data: Buffer.from("x") }]),
+    /aws extractFiles failed: tar: corrupted archive/,
+  );
+  assert.match(attempted, /rm -f '\.extract\.tar'/, "temp archive removal runs even when extract fails");
+});
