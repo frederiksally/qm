@@ -298,9 +298,11 @@ test("a custom injection header + scheme is honored", async () => {
 
 test("an upstream fetch error is reported generically (never leaks the URL/headers) + recorded", async () => {
   const usage = createCredentialUsageSink();
+  const audits: Array<{ action: string; detail?: string }> = [];
   const r = await brokerCredentialCall(
     base({
       usage,
+      audit: (e) => audits.push({ action: e.action, ...(e.detail !== undefined ? { detail: e.detail } : {}) }),
       fetchImpl: async () => {
         throw new Error("ECONNREFUSED https://api.x.com with Bearer super-secret-bearer");
       },
@@ -310,6 +312,118 @@ test("an upstream fetch error is reported generically (never leaks the URL/heade
   assert.match(JSON.stringify(r.json), /upstream_unreachable/);
   assert.doesNotMatch(JSON.stringify(r.json), new RegExp(SECRET));
   assert.equal((await usage.list({ slug: "x-firehose" }))[0]!.status, "error");
+  // The classification must be a fixed label, never the thrown message: that message is
+  // upstream-influenced and here it contains both the URL and the injected secret.
+  const failure = audits.find((a) => a.action === "credential.broker.error");
+  assert.ok(failure, "the failure is audited");
+  assert.doesNotMatch(JSON.stringify(audits), new RegExp(SECRET), "the audit trail must never carry the secret");
+  assert.doesNotMatch(JSON.stringify(audits), /api\.x\.com|tweets/, "nor the target URL");
+});
+
+test("a transport fault on an idempotent read is retried once, and the classification is audited", async () => {
+  const audits: Array<{ action: string; detail?: string }> = [];
+  let calls = 0;
+  const r = await brokerCredentialCall(
+    base({
+      audit: (e) => audits.push({ action: e.action, ...(e.detail !== undefined ? { detail: e.detail } : {}) }),
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          const err = new Error("socket hang up") as Error & { code: string };
+          err.code = "ECONNRESET";
+          throw err;
+        }
+        return { status: 200, contentType: "application/json", text: async () => '{"ok":true}' };
+      },
+    }),
+  );
+  assert.equal(r.status, 200, "a single dropped socket must not surface as a failed call");
+  assert.equal(calls, 2, "the read is retried exactly once");
+  assert.equal(audits.filter((a) => a.action === "credential.broker.error").length, 0);
+});
+
+test("retries are bounded, and a persistent failure records how it failed and how often it tried", async () => {
+  const audits: Array<{ action: string; detail?: string }> = [];
+  let calls = 0;
+  const r = await brokerCredentialCall(
+    base({
+      audit: (e) => audits.push({ action: e.action, ...(e.detail !== undefined ? { detail: e.detail } : {}) }),
+      fetchImpl: async () => {
+        calls += 1;
+        const err = new Error("connect ECONNREFUSED") as Error & { code: string };
+        err.code = "ECONNREFUSED";
+        throw err;
+      },
+    }),
+  );
+  assert.equal(r.status, 502);
+  assert.equal(calls, 2, "attempts are bounded at BROKER_ATTEMPTS");
+  const failure = audits.find((a) => a.action === "credential.broker.error")!;
+  assert.match(failure.detail!, /connection_refused/, "the cause is named, not swallowed as null");
+  assert.match(failure.detail!, /after 2 attempts/);
+});
+
+test("a write is never retried, so the broker cannot duplicate a side effect", async () => {
+  let calls = 0;
+  const r = await brokerCredentialCall(
+    base({
+      body: { credential: "x-firehose", method: "POST", url: "https://api.x.com/2/tweets/search/recent", body: "{}" },
+      reader: reader({ slug: "x-firehose", allowedMethods: ["POST"], allowedPathPrefixes: ["/2/tweets/search/"] }),
+      fetchImpl: async () => {
+        calls += 1;
+        const err = new Error("socket hang up") as Error & { code: string };
+        err.code = "ECONNRESET";
+        throw err;
+      },
+    }),
+  );
+  assert.equal(r.status, 502);
+  assert.equal(calls, 1, "a POST that may already have been applied upstream is not repeated");
+});
+
+test("a non-transport failure is not retried, and each fault gets a distinct label", async () => {
+  const kinds: Array<[string, Partial<Error> & { code?: string; name?: string }, string, number]> = [
+    ["dns", { code: "ENOTFOUND" }, "dns_failure", 2],
+    ["connect timeout", { code: "UND_ERR_CONNECT_TIMEOUT" }, "connect_timeout", 2],
+    ["request timeout", { name: "TimeoutError" }, "timeout", 2],
+    ["tls", { code: "CERT_HAS_EXPIRED" }, "tls_error", 1],
+    ["unknown", {}, "unreachable", 1],
+  ];
+  for (const [label, shape, expected, expectedCalls] of kinds) {
+    const audits: Array<{ action: string; detail?: string }> = [];
+    let calls = 0;
+    await brokerCredentialCall(
+      base({
+        audit: (e) => audits.push({ action: e.action, ...(e.detail !== undefined ? { detail: e.detail } : {}) }),
+        fetchImpl: async () => {
+          calls += 1;
+          const err = new Error(label) as Error & { code?: string };
+          Object.assign(err, shape);
+          throw err;
+        },
+      }),
+    );
+    const failure = audits.find((a) => a.action === "credential.broker.error")!;
+    assert.match(failure.detail!, new RegExp(expected), `${label} classifies as ${expected}`);
+    assert.equal(calls, expectedCalls, `${label} attempts ${expectedCalls}x`);
+  }
+});
+
+test("an undici-style nested cause is classified from the cause, not the wrapper", async () => {
+  const audits: Array<{ action: string; detail?: string }> = [];
+  await brokerCredentialCall(
+    base({
+      audit: (e) => audits.push({ action: e.action, ...(e.detail !== undefined ? { detail: e.detail } : {}) }),
+      fetchImpl: async () => {
+        // This is the exact shape Node's fetch throws for an unreachable host.
+        const err = new TypeError("fetch failed") as TypeError & { cause: { code: string } };
+        err.cause = { code: "UND_ERR_CONNECT_TIMEOUT" };
+        throw err;
+      },
+    }),
+  );
+  const failure = audits.find((a) => a.action === "credential.broker.error")!;
+  assert.match(failure.detail!, /connect_timeout/);
 });
 
 test("a missing slug or url is a 400 bad_request", async () => {

@@ -14,12 +14,16 @@ export type BrokerFetch = (
   init: { method: string; headers: Record<string, string>; body?: string },
 ) => Promise<BrokerFetchResponse>;
 
+export const BROKER_TIMEOUT_MS = 15_000;
+export const BROKER_ATTEMPTS = 2;
+
 export const realBrokerFetch: BrokerFetch = async (url, init) => {
   const r = await fetch(url, {
     method: init.method,
     headers: init.headers,
     ...(init.body !== undefined ? { body: init.body } : {}),
     redirect: "manual",
+    signal: AbortSignal.timeout(BROKER_TIMEOUT_MS),
   });
   return {
     status: r.status,
@@ -27,6 +31,62 @@ export const realBrokerFetch: BrokerFetch = async (url, init) => {
     text: () => r.text(),
   };
 };
+
+/**
+ * Classify a transport failure into a fixed, non-sensitive label.
+ *
+ * The thrown error's message is attacker- and upstream-influenced and can contain the
+ * request URL or the injected secret, so it must never reach the audit log. A closed
+ * vocabulary keeps the audit trail diagnosable — previously the broker swallowed the error
+ * entirely, so a failed call recorded `detail: null` and no one could tell a DNS failure
+ * from a timeout from a dropped socket.
+ */
+export function brokerFailureKind(error: unknown): string {
+  const name = typeof (error as { name?: unknown })?.name === "string" ? (error as { name: string }).name : "";
+  const code = typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : "";
+  const causeCode =
+    typeof (error as { cause?: { code?: unknown } })?.cause?.code === "string"
+      ? (error as { cause: { code: string } }).cause.code
+      : "";
+  if (name === "TimeoutError" || code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT") return "timeout";
+  if (name === "AbortError") return "aborted";
+  for (const candidate of [code, causeCode]) {
+    switch (candidate) {
+      case "UND_ERR_CONNECT_TIMEOUT":
+        return "connect_timeout";
+      case "ECONNREFUSED":
+        return "connection_refused";
+      case "ECONNRESET":
+        return "connection_reset";
+      case "EPIPE":
+        return "connection_closed";
+      case "ENOTFOUND":
+      case "EAI_AGAIN":
+        return "dns_failure";
+      case "UND_ERR_SOCKET":
+        return "socket_error";
+      case "CERT_HAS_EXPIRED":
+      case "UNABLE_TO_VERIFY_LEAF_SIGNATURE":
+        return "tls_error";
+      default:
+        break;
+    }
+  }
+  return "unreachable";
+}
+
+/** Transport failures worth one more immediate attempt on an idempotent request. */
+const RETRYABLE_FAILURES = new Set([
+  "connect_timeout",
+  "connection_refused",
+  "connection_reset",
+  "connection_closed",
+  "socket_error",
+  "dns_failure",
+  "timeout",
+]);
+
+const RETRYABLE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export interface BrokerRequest {
   credential?: unknown;
@@ -164,14 +224,26 @@ export async function brokerCredentialCall(opts: {
   const [injHeader, injValue] = brokerCredentialAuthHeader(rec);
   headers[injHeader] = injValue;
 
-  let resp: BrokerFetchResponse;
-  try {
-    resp = await fetchImpl(parsed.toString(), {
-      method,
-      headers,
-      ...(typeof body.body === "string" ? { body: body.body } : {}),
-    });
-  } catch {
+  let resp: BrokerFetchResponse | null = null;
+  const idempotent = RETRYABLE_METHODS.has(method) && typeof body.body !== "string";
+  const attempts = idempotent ? BROKER_ATTEMPTS : 1;
+  let failure = "unreachable";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      resp = await fetchImpl(parsed.toString(), {
+        method,
+        headers,
+        ...(typeof body.body === "string" ? { body: body.body } : {}),
+      });
+      break;
+    } catch (error) {
+      failure = brokerFailureKind(error);
+      // A retry only helps a transport fault on a request with no side effects; anything
+      // else (or a final attempt) fails now rather than doubling the caller's latency.
+      if (attempt === attempts || !RETRYABLE_FAILURES.has(failure)) break;
+    }
+  }
+  if (resp === null) {
     opts.usage?.record({
       slug,
       host: rec.host,
@@ -185,6 +257,7 @@ export async function brokerCredentialCall(opts: {
       resource: slug,
       scopeLabel: claims.scopeId,
       status: "error",
+      detail: attempts > 1 ? `${failure} (after ${attempts} attempts)` : failure,
     });
     return {
       status: 502,
